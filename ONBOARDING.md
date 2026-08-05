@@ -157,3 +157,13 @@ python3 scripts/agent_dispatch.py --all-deterministic       # 全部确定性岗
 - **账户/订单接口报 missing key**：环境变量未加载，先 `source ~/.hermes/scripts/load_binance_env.sh` 或重新 export
 - **Dashboard 打不开**：确认进程存活且只监听 127.0.0.1（`lsof -i :8765`）
 - **测试网余额每月重置**：本地账本 `orders.jsonl` 为主记录，不受影响
+
+## 健康检查
+
+接管后先跑一次健康检查，确认系统全绿：
+
+```bash
+PYTHONPATH=src /opt/homebrew/bin/python3.14 scripts/health_check.py   # 退出码 0 = 健康
+```
+
+检查：进程存活 / 12 个依赖数据文件完整性 / L3 严重事件 / cron error。
