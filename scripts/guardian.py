@@ -38,6 +38,7 @@ SENTIMENT_EVERY = 60      # 60 分钟
 MACRO_EVERY = 60           # 60 分钟（宏观数据）
 
 _last_price: float | None = None
+_last_prices: dict[str, float] = {}
 
 
 def now_cn() -> str:
@@ -61,33 +62,45 @@ def raise_alert(level: str, summary: str) -> None:
 
 
 def check_price() -> None:
-    """L0：1 分钟粒度价格异常检测（突发暴涨/暴跌分秒必争）。"""
+    """L0：1 分钟粒度多标的实时价格（突发暴涨/暴跌分秒必争）。
+
+    18 标的价格快照写 live_prices.json（Dashboard 实时看板数据源）；
+    每个标的检测 1 分钟异常：BTC 阈值 1%，其他标的 1.5%（alt 波动大）。
+    """
     global _last_price
     try:
-        from autotrader.binance import BinanceAdapter
-        client = BinanceAdapter(mode="testnet")
-        ticker = client.ticker_price(PRICE_SYMBOL)
-        price = float(ticker["price"])
+        from autotrader.live_prices import scan_live_prices
+        data = scan_live_prices()
+        prices = data.get("prices") or {}
     except Exception as exc:
         log(f"⚠️ 价格获取失败: {exc}")
         return
+    if not prices:
+        return
 
-    if _last_price is not None:
-        change = (price - _last_price) / _last_price * 100
-        if abs(change) >= PRICE_SPIKE_PCT:
-            direction = "暴涨" if change > 0 else "暴跌"
-            event = {
-                "type": "price_spike",
-                "level": "L2" if abs(change) < 3 else "L3",
-                "detail": f"1分钟内 {direction} {change:+.2f}% ({_last_price:.0f} → {price:.0f})",
-                "symbol": PRICE_SYMBOL,
-                "at": now_cn(),
-            }
-            write_event(event)
-            log(f"⚠️ {event['detail']}")
-            if abs(change) >= 2.0:
-                raise_alert("action", f"{PRICE_SYMBOL} 1分钟{direction} {change:+.2f}%！{event['detail']}")
-    _last_price = price
+    for symbol, row in prices.items():
+        try:
+            price = float(row["price"])
+        except (TypeError, ValueError):
+            continue
+        threshold = PRICE_SPIKE_PCT if symbol == "BTCUSDT" else 1.5
+        prev = _last_prices.get(symbol)
+        if prev is not None:
+            change = (price - prev) / prev * 100
+            if abs(change) >= threshold:
+                direction = "暴涨" if change > 0 else "暴跌"
+                event = {
+                    "type": "price_spike",
+                    "level": "L2" if abs(change) < 3 else "L3",
+                    "detail": f"1分钟内 {symbol} {direction} {change:+.2f}% ({prev:.4g} → {price:.4g})",
+                    "symbol": symbol,
+                    "at": now_cn(),
+                }
+                write_event(event)
+                log(f"⚠️ {event['detail']}")
+                if abs(change) >= 2.0:
+                    raise_alert("action", f"{symbol} 1分钟{direction} {change:+.2f}%！{event['detail']}")
+        _last_prices[symbol] = price
 
 
 def scan_news_every_5m() -> None:

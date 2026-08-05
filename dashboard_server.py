@@ -74,6 +74,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+
+    def _live_prices(self):
+        """实时价格看板数据（guardian 每分钟更新）。"""
+        try:
+            from autotrader.live_prices import load_live_prices
+            return load_live_prices()
+        except Exception:
+            return {"prices": {}, "source": "error", "updated_at": None}
+
     def _status(self):
         decisions = []
         if AUDIT.exists():
@@ -185,6 +194,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "liquidity_ok": market.get("liquidity_ok"),
             "token_usage": token_usage,
             "opportunities": opportunities,
+            "live_prices": self._live_prices(),
         }
 
     def _json(self, payload):
