@@ -24,3 +24,4 @@ artifacts/
 
 # cron 会话生成的临时分析脚本（不入库）
 run_*.py
+cron_*.py
