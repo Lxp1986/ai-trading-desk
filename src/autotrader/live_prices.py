@@ -96,20 +96,47 @@ def _fetch_coingecko() -> dict[str, dict[str, Any]] | None:
         return None
 
 
-def scan_live_prices() -> dict[str, Any]:
-    """实时价格扫描（1 分钟粒度）：测试网优先，CoinGecko 兜底，永续落盘。
+def _fetch_hyperliquid() -> dict[str, dict[str, Any]] | None:
+    """Hyperliquid 测试网行情（第二交易所源，实盘后自动切 Hyperliquid 实盘）。"""
+    try:
+        from autotrader.hyperliquid import HyperliquidAdapter
+        client = HyperliquidAdapter(mode="testnet")
+        rows: dict[str, dict[str, Any]] = {}
+        for item in WATCHLIST:
+            try:
+                # HL 交易对符号无 USDT 后缀（BTC 而非 BTCUSDT）
+                hl_symbol = item["symbol"].replace("USDT", "")
+                t = client.ticker_price(hl_symbol)
+                price = float(t["price"])
+                if price <= 0:
+                    continue
+                rows[item["symbol"]] = {
+                    "price": price, "change_24h": None, "volume_24h": None, "name": item["name"],
+                }
+            except Exception:
+                continue
+        return rows or None
+    except Exception:
+        return None
 
-    返回 {"prices": {SYMBOL: {...}}, "source": "...", "updated_at": "..."}
+
+def scan_live_prices() -> dict[str, Any]:
+    """实时价格扫描（30 秒粒度，多交易所）：币安测试网 → Hyperliquid 测试网 → CoinGecko 兜底。
+
+    每条价格带 exchange 字段（多交易所区分，实盘后自动切实盘源）。
+    返回 {"prices": {SYMBOL: {..., "exchange": "..."}}, "source": "...", "updated_at": "..."}
     """
-    source = "binance_testnet"
-    rows = _fetch_testnet()
-    if not rows:
-        source = "coingecko"
-        rows = _fetch_coingecko()
-    if not rows:
-        result = {"prices": {}, "source": "unavailable", "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "error": "双源均不可用"}
+    for fetcher, exchange in ((_fetch_testnet, "binance_testnet"),
+                              (_fetch_hyperliquid, "hyperliquid_testnet"),
+                              (_fetch_coingecko, "coingecko")):
+        rows = fetcher()
+        if rows:
+            for row in rows.values():
+                row["exchange"] = exchange
+            result = {"prices": rows, "source": exchange, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            break
     else:
-        result = {"prices": rows, "source": source, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        result = {"prices": {}, "source": "unavailable", "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "error": "三源均不可用"}
     LIVE_PRICES.parent.mkdir(parents=True, exist_ok=True)
     LIVE_PRICES.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     return result

@@ -32,15 +32,18 @@ class LivePricesTest(unittest.TestCase):
         self.assertGreater(rows["BTCUSDT"]["price"], 0)
 
     def test_scan_failure_also_writes(self):
-        """双源都挂 → 也落盘（永续存在规范：成功失败都写状态）。"""
+        """三源都挂 → 也落盘（永续存在规范：成功失败都写状态）。"""
         orig_t = lp._fetch_testnet
+        orig_h = lp._fetch_hyperliquid
         orig_c = lp._fetch_coingecko
         lp._fetch_testnet = lambda: None
+        lp._fetch_hyperliquid = lambda: None
         lp._fetch_coingecko = lambda: None
         try:
             result = lp.scan_live_prices()
         finally:
             lp._fetch_testnet = orig_t
+            lp._fetch_hyperliquid = orig_h
             lp._fetch_coingecko = orig_c
         self.assertEqual(result["source"], "unavailable")
         self.assertTrue(lp.LIVE_PRICES.exists())  # 文件永续存在
