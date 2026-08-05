@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent
 AUDIT = ROOT / "artifacts" / "audit.jsonl"
 TOKEN_USAGE = ROOT / "artifacts" / "token_usage.json"
+STATE = ROOT / "artifacts" / "state.json"
 STARTING_CAPITAL_USDT = 277.0
 
 import sys
@@ -40,19 +41,50 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "api_calls": 0,
             "updated_at": None,
             "scope": "project_only",
-            "provider": "Hermes routed DeepSeek",
+            "provider": "Hermes routed model",
         }
         if TOKEN_USAGE.exists():
             try:
                 token_usage.update(json.loads(TOKEN_USAGE.read_text(encoding="utf-8")))
             except (OSError, json.JSONDecodeError):
                 token_usage["status"] = "usage file unreadable"
+
+        # 运行循环最新状态（runner.py 写入；缺失时退回写死初始值）
+        state: dict = {}
+        if STATE.exists():
+            try:
+                state = json.loads(STATE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                state = {}
+        portfolio = state.get("portfolio", {}) or {}
+        market = state.get("snapshot", {}) or {}
+        indicators = state.get("indicators", {}) or {}
+        risk = state.get("risk", {}) or {}
+
         return {
             "mode": "simulation",
             "network": "Binance Spot Testnet",
             "currency": "USDT",
             "starting_capital": STARTING_CAPITAL_USDT,
-            "nav": STARTING_CAPITAL_USDT,
+            "nav": portfolio.get("equity", STARTING_CAPITAL_USDT),
+            "cash": portfolio.get("cash", STARTING_CAPITAL_USDT),
+            "positions": portfolio.get("positions", {}),
+            "position_value": portfolio.get("position_value", 0.0),
+            "realized_pnl": portfolio.get("realized_pnl", 0.0),
+            "unrealized_pnl": portfolio.get("unrealized_pnl", 0.0),
+            "max_drawdown_pct": portfolio.get("max_drawdown_pct", 0.0),
+            "market": {
+                "symbol": market.get("symbol", "BTC/USDT"),
+                "price": market.get("price"),
+                "trend": market.get("trend", "unknown"),
+                "volume_ratio": market.get("volume_ratio"),
+                "liquidity_ok": market.get("liquidity_ok"),
+                "rsi14": indicators.get("rsi14"),
+                "atr14": indicators.get("atr14"),
+                "change_24h_pct": indicators.get("change_24h_pct"),
+            },
+            "risk": risk,
+            "state_updated_at": state.get("updated_at"),
             "local_only": True,
             "audit_records": len(decisions),
             "latest_decision": decisions[-1] if decisions else None,

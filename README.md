@@ -35,14 +35,14 @@
 
 ## 显示界面与部署方式
 
-当前版本还没有显示界面，只有命令行模拟和审计文件。下一步采用“本机控制台”方案，不购买、不租用、不部署云服务器。
+本机控制台方案已落地：不购买、不租用、不部署云服务器，全部留在本机。
 
 ```text
 本机 Mac
-├── 数据采集与计算进程
-├── 本地数据库/审计文件
-├── 本地模拟交易引擎
-└── 本地Dashboard（仅监听 127.0.0.1）
+├── 数据采集与运行循环（scripts/runner.py，每15分钟一轮）
+├── 本地数据库/审计文件（market.db 历史K线、audit.jsonl、orders.jsonl 账本）
+├── 本地模拟交易引擎（DecisionEngine + 硬风控）
+└── 本地Dashboard（dashboard_server.py，仅监听 127.0.0.1:8765）
                          └── 需要时经Hermes路由调用当前可用模型
 ```
 
@@ -76,6 +76,26 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 # 模拟运行（脚本内已自行处理 src 路径）
 python3 examples/run_simulation.py
 
+# 30 天运行循环（常驻：采集行情→指标→市场状态→风控→账本→事件检测）
+python3 scripts/runner.py --interval 15
+
 # 本机 Dashboard（仅 127.0.0.1:8765，无公网端口）
 python3 dashboard_server.py
+
+# 经营报告 / 异常看门狗（cron 已配置：每日9点报告 + 每30分钟看门狗 → Telegram）
+python3 scripts/trading_report.py
+```
+
+## 模块结构
+
+```text
+src/autotrader/
+├── market.py      市场状态分类器（EMA/RSI/ATR/量比）+ 历史K线落盘 SQLite
+├── portfolio.py   本地账本：持仓/现金/已实现与浮动盈亏/净值/最大回撤
+├── risk.py        风控：订单级检查 + 硬边界（连亏暂停/回撤熔断/单笔风险预算）
+├── engine.py      决策引擎（CEO假设→风控→模拟执行→审计）
+├── llm.py         Hermes 集成层：register_thesis（草拟校验）/ record_usage（Token登记）/ 确定性降级
+├── binance_testnet.py  Binance Spot Testnet 适配器（只连测试网）
+├── team.py        Agent 员工组织（静态花名册）
+└── models.py      数据模型
 ```

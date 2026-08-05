@@ -1,0 +1,45 @@
+{
+  "updated_at": "2026-08-05 14:02:52",
+  "snapshot": {
+    "symbol": "BTC/USDT",
+    "price": 64312.5,
+    "volume_ratio": 0.22,
+    "trend": "sideways",
+    "liquidity_ok": false,
+    "source": "binance_testnet"
+  },
+  "indicators": {
+    "price": 64312.5,
+    "ema20": 64261.6921,
+    "ema50": 64218.4657,
+    "rsi14": 44.1584,
+    "atr14": 505.455,
+    "volume_ratio": 0.2185,
+    "change_24h_pct": 0.5822,
+    "high_24h": 65510.52,
+    "low_24h": 58406.23
+  },
+  "risk": {
+    "consecutive_losses": 0,
+    "drawdown_pct": 0.0,
+    "trading_halted": false,
+    "halt_reasons": []
+  },
+  "portfolio": {
+    "starting_cash": 277.0,
+    "cash": 270.564942,
+    "positions": {
+      "BTCUSDT": {
+        "quantity": 0.0001,
+        "avg_cost": 64350.579999999994,
+        "cost_basis": 6.435058
+      }
+    },
+    "position_value": 6.43125,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": -0.003808,
+    "equity": 276.996192,
+    "max_drawdown_pct": 0.0
+  },
+  "events_recent": 0
+}

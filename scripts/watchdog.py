@@ -63,10 +63,14 @@ def main() -> None:
     else:
         alerts.append("⚠️ **审计文件不存在**：`artifacts/audit.jsonl` 缺失，项目可能尚未运行过。")
 
-    # 3. 连续否决 → 策略失效预警
+    # 3. 连续否决 → 策略失效预警（hold 观望不计入否决）
     if records:
         recent = records[-ALERT_THRESHOLD_REJECTED:]
-        rejected = [r for r in recent if not r.get("decision", {}).get("approved")]
+        rejected = [
+            r for r in recent
+            if not r.get("decision", {}).get("approved")
+            and r.get("decision", {}).get("intent", {}).get("side") != "hold"
+        ]
         if len(rejected) >= ALERT_THRESHOLD_REJECTED:
             alerts.append(
                 f"⚠️ **策略失效预警**：最近 {len(rejected)} 条交易假设全部被风控否决。"

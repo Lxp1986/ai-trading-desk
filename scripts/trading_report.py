@@ -59,22 +59,54 @@ def build_report() -> dict:
     audit = load_audit()
     tokens = load_token_usage()
     approved = [r for r in audit if r.get("decision", {}).get("approved")]
-    rejected = [r for r in audit if not r.get("decision", {}).get("approved")]
+    held = [r for r in audit if r.get("decision", {}).get("intent", {}).get("side") == "hold"]
+    rejected = [
+        r for r in audit
+        if not r.get("decision", {}).get("approved")
+        and r.get("decision", {}).get("intent", {}).get("side") != "hold"
+    ]
     latest = audit[-1] if audit else None
 
-    realized = 0.0  # 模拟盘：尚未平仓，无已实现盈亏（状态：推断为0）
-    nav = STARTING_CAPITAL_USDT
+    # 真实账本/运行状态（runner.py 写入的 state.json）
+    state: dict = {}
+    state_path = ROOT / "artifacts" / "state.json"
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+    portfolio = state.get("portfolio", {}) or {}
+    market = state.get("snapshot", {}) or {}
+    indicators = state.get("indicators", {}) or {}
+    risk = state.get("risk", {}) or {}
 
     status = {
         "generated_at": now_cn(),
         "mode": "simulation",
         "network": "Binance Spot Testnet",
         "dashboard_alive": server_alive(),
+        "state_updated_at": state.get("updated_at"),
         "starting_capital": STARTING_CAPITAL_USDT,
-        "nav": nav,
-        "realized_pnl": realized,
+        "nav": portfolio.get("equity", STARTING_CAPITAL_USDT),
+        "cash": portfolio.get("cash", STARTING_CAPITAL_USDT),
+        "positions": portfolio.get("positions", {}),
+        "position_value": portfolio.get("position_value", 0.0),
+        "realized_pnl": portfolio.get("realized_pnl", 0.0),
+        "unrealized_pnl": portfolio.get("unrealized_pnl", 0.0),
+        "max_drawdown_pct": portfolio.get("max_drawdown_pct", 0.0),
+        "market": {
+            "symbol": market.get("symbol", "BTC/USDT"),
+            "price": market.get("price"),
+            "trend": market.get("trend", "unknown"),
+            "volume_ratio": market.get("volume_ratio"),
+            "rsi14": indicators.get("rsi14"),
+            "atr14": indicators.get("atr14"),
+            "change_24h_pct": indicators.get("change_24h_pct"),
+        },
+        "risk": risk,
         "audit_records": len(audit),
         "approved_decisions": len(approved),
+        "held_decisions": len(held),
         "rejected_decisions": len(rejected),
         "latest_decision": latest,
         "token_usage": {
@@ -89,6 +121,10 @@ def build_report() -> dict:
 
 
 def render_markdown(s: dict) -> str:
+    market = s.get("market", {})
+    risk = s.get("risk", {})
+    trend_cn = {"trend_up": "📈 上升", "trend_down": "📉 下降"}.get(market.get("trend"), "↔️ 震荡")
+    halt = risk.get("trading_halted")
     lines = [
         "📊 **AI自主交易事业部 · 经营报告**",
         f"生成时间：{s['generated_at']}",
@@ -97,13 +133,31 @@ def render_markdown(s: dict) -> str:
         f"- 模式：**{s['mode']}**（模拟盘，无真实资金）",
         f"- 网络：{s['network']}",
         f"- Dashboard：{'✅ 运行中' if s['dashboard_alive'] else '❌ 未运行'}",
+        f"- 状态更新时间：{s.get('state_updated_at') or '（运行循环未启动）'}",
+        f"- 风控：{'🚨 熔断中：' + '；'.join(risk.get('halt_reasons', [])) if halt else '✅ 正常'}",
+        "",
+        "## 市场与组合",
+        f"- 市场状态：{trend_cn}（{market.get('symbol')} @ ${market.get('price') or '--'}，"
+        f"RSI {market.get('rsi14') or '--'}，量比 {market.get('volume_ratio') or '--'}，"
+        f"24h {market.get('change_24h_pct') or 0:+.2f}%）",
         f"- 初始资金：{s['starting_capital']} USDT",
         f"- 当前净值：{s['nav']} USDT（模拟）",
-        f"- 已实现盈亏：{s['realized_pnl']} USDT（模拟盘未平仓，恒为0）",
+        f"- 现金：{s['cash']} USDT | 持仓市值：{s['position_value']} USDT",
+        f"- 已实现盈亏：{s['realized_pnl']} USDT | 浮动盈亏：{s['unrealized_pnl']} USDT",
+        f"- 最大回撤：{s['max_drawdown_pct']}%",
+    ]
+    if s.get("positions"):
+        pos_desc = "；".join(
+            f"{k} {v['quantity']}（成本 {v['avg_cost']:.2f}）" for k, v in s["positions"].items()
+        )
+        lines.append(f"- 持仓：{pos_desc}")
+    else:
+        lines.append("- 持仓：无")
+    lines += [
         "",
         "## 决策记录",
         f"- 审计记录总数：{s['audit_records']}",
-        f"- 已批准：{s['approved_decisions']} / 被风控否决：{s['rejected_decisions']}",
+        f"- 已批准：{s['approved_decisions']} / 观望：{s.get('held_decisions', 0)} / 被风控否决：{s['rejected_decisions']}",
     ]
     latest = s.get("latest_decision")
     if latest:
@@ -128,7 +182,7 @@ def render_markdown(s: dict) -> str:
         f"- 更新时间：{s['token_usage']['updated_at'] or '从未调用'}",
         "",
         "## 说明",
-        "- 以上为**模拟盘状态**，非实盘收益；净值=初始资金（模拟仓未平仓不计浮动盈亏）。",
+        "- 以上为**模拟盘状态**，非实盘收益；净值/盈亏来自本地账本（测试网虚拟订单）。",
         "- 报告由本地脚本生成，仅统计本项目 Token，不混入其他项目。",
     ]
     return "\n".join(lines)
