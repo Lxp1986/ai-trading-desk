@@ -90,12 +90,21 @@ src/autotrader/
 ├── portfolio.py         本地账本：持仓/现金/盈亏/净值/最大回撤
 ├── risk.py              风控：订单级 + 硬边界（连亏5暂停/回撤15%停/25%全平/单笔风险1%）
 ├── engine.py            决策引擎（假设→风控→模拟执行→审计）
+├── strategy.py          策略库（趋势突破/回撤反弹/震荡/防守/事件驱动）
+├── news_research.py     新闻研究员：事件分级(A/B/C)+落盘
+├── sentiment.py         情绪研究员：资金费率/情绪状态
+├── onchain.py           链上研究员：信号记录/钱包共识置信度
+├── event_trader.py      事件交易员：五阶段流程
 ├── llm.py               Hermes 集成：register_thesis / record_usage / 确定性降级
-├── binance_testnet.py   Binance Spot Testnet 适配器（只连测试网）
-├── team.py              Agent 员工组织（静态花名册）
+├── exchange.py          交易所适配器统一接口 + 实盘授权开关
+├── binance.py            Binance 双模式适配器（测试网/实盘）
+├── hyperliquid.py        Hyperliquid 适配器（测试网/实盘，ed25519）
+├── binance_testnet.py   Binance Spot Testnet 适配器（向后兼容）
+├── team.py              Agent 员工组织（17 岗位完整档案）
 └── models.py            数据模型
 scripts/
 ├── runner.py            30 天运行循环（常驻）
+├── agent_dispatch.py    ★ 员工调度器：CEO 点名任意岗位立即执行
 ├── trading_report.py    经营报告（Markdown）
 └── watchdog.py          异常看门狗（静默告警）
 artifacts/
@@ -103,10 +112,28 @@ artifacts/
 ├── orders.jsonl         测试网订单账本（本地主记录）
 ├── token_usage.json     Token 用量（仅本项目）
 ├── state.json           最新市场/组合/风控状态（runner 每轮写入）
+├── events.jsonl         事件记录（新闻研究员）
+├── onchain.jsonl        链上信号记录
+├── sentiment.json       情绪状态快照
+├── dispatch_last.json   最近一次员工调度结果
 ├── market.db            历史 K 线（SQLite）
-├── events.jsonl         事件记录
 └── runner.log           运行日志
 ```
+
+## 6.1 员工调度（随时待命）
+
+所有 17 名员工都有工作入口（status=active，随时待命）：
+
+```bash
+python3 scripts/agent_dispatch.py --list                   # 全部员工与状态
+python3 scripts/agent_dispatch.py 策略研究员                # 点名单个岗位立即执行
+python3 scripts/agent_dispatch.py 风险官 组合经理            # 点名多个岗位
+python3 scripts/agent_dispatch.py --all-deterministic       # 全部确定性岗位
+```
+
+确定性岗位（数据/技术/市场/策略/情绪/组合/风控/事件）直接计算；研究型岗位
+（新闻/链上/聪明钱包）由 CEO 联网采集数据后经 record_event/record_signal 落盘，
+调度器可随时回放其输出。
 
 ## 7. 硬风控参数（不可因 CEO 自信突破）
 
