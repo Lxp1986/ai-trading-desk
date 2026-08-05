@@ -78,6 +78,7 @@ export LIVE_TRADING_ENABLED=1
 3. 重建 Hermes 实例级 cron（4 个任务）：
    - 每日 09:00 经营报告 → Telegram（读 `scripts/trading_report.py` 输出）
    - 每 30 分钟异常看门狗（`~/.hermes/scripts/trading_watchdog.py`，静默模式，no_agent）
+- **AI交易-CEO告警即时处理**（d64ac330cde3）：看门狗告警时自动唤醒，立即处理并回报 Telegram（每 6 小时兜底）
    - 每日 10:00/22:00 Hermes 交易假设介入（读 `artifacts/state.json` → 草拟 → 风控 → 虚拟下单 → 简报）
 4. 确认 Dashboard 只监听 127.0.0.1（无公网端口、无端口转发）；
 5. 第一个月：每日查看经营报告，异常时（熔断/连续否决/Token 突增）立即上报董事会。
