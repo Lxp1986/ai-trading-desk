@@ -30,6 +30,37 @@ export BINANCE_TESTNET_API_SECRET='...'
 持久化建议：追加到 `~/.zshrc`（本机专用）。Hermes 的 cron 任务通过
 `~/.hermes/scripts/load_binance_env.sh` 加载，无需在 prompt 中暴露值。
 
+### 实盘凭证（董事会授权后才配置）
+
+```bash
+# Binance 实盘（仅 LIVE_TRADING_ENABLED=1 后生效）
+export BINANCE_API_KEY='...'
+export BINANCE_API_SECRET='...'
+
+# Hyperliquid（去中心化交易所）
+# 测试网：https://app.hyperliquid-testnet.xyz 生成 ed25519 agent key
+export HYPERLIQUID_TESTNET_PRIVATE_KEY='...'
+# 实盘：https://app.hyperliquid.xyz 生成 ed25519 agent key
+export HYPERLIQUID_PRIVATE_KEY='...'
+
+# 实盘总开关（董事会授权 = 1，否则一切实盘适配器拒绝初始化）
+export LIVE_TRADING_ENABLED=1
+```
+
+实盘切换流程：模拟盘验证通过 → 董事会授权 `LIVE_TRADING_ENABLED=1` →
+配置对应交易所凭证 → 用 `BinanceAdapter(mode="live")` / `HyperliquidAdapter(mode="live")`。
+未授权时任何实盘模式初始化都会抛错拒绝。
+
+## 3.1 交易所适配器
+
+统一接口 `ExchangeAdapter`（src/autotrader/exchange.py）：行情/账户/下单/撤单/订单状态。
+- **BinanceAdapter**：测试网（默认）/实盘双模式，HMAC-SHA256 签名，纯标准库
+- **HyperliquidAdapter**：测试网（默认）/实盘双模式，ed25519 agent key 签名，
+  需 `pip install cryptography`（可选依赖，行情查询不依赖；交易/签名需要）
+
+新增交易所 = 实现一个 ExchangeAdapter 子类，风控/账本/决策层无需改动。
+
+
 ## 4. 一键启动
 
 ```bash
