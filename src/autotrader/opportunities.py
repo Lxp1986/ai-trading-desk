@@ -130,7 +130,7 @@ def scan_one_adaptive(client, symbol: str,
         price = ind.get("price", 0.0)
         if price <= 0 or rsi14 <= 0 or rsi14 > 100:
             return None
-        signals = [s.to_dict() for s in apply_strategies(ind, [])]
+        signals = [s.to_dict() for s in apply_strategies(ind, [], timeframe=tf)]
         return Opportunity(
             symbol=symbol,
             price=ind.get("price", 0.0),

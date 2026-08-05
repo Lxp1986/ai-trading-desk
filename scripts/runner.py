@@ -294,6 +294,15 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
     except Exception as exc:
         log(f"⚠️ 机会扫描失败: {exc}")
 
+    # 学习引擎（交易/事件/信号三通道 · 每轮自动学习升级）
+    try:
+        from autotrader.learning_engine import run_learning
+        learn_report = run_learning()
+        if learn_report.get("trades", {}).get("learned") or learn_report.get("events", {}).get("learned"):
+            log("🧠 学习引擎: 权重/规则已更新（自动升级）")
+    except Exception as exc:
+        log(f"⚠️ 学习引擎失败: {exc}")
+
     state = {
         "updated_at": now_cn(),
         "opportunities": opportunities,

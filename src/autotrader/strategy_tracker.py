@@ -35,13 +35,16 @@ def now_iso() -> str:
 
 
 def record_signal_result(*, strategy: str, symbol: str, pnl: float,
-                         closed_at: str | None = None) -> dict[str, Any]:
-    """平仓后按策略归因记录一笔结果。pnl 为该笔交易已实现盈亏（USDT）。"""
+                         closed_at: str | None = None,
+                         timeframe: str = "15m") -> dict[str, Any]:
+    """平仓后按策略归因记录一笔结果。pnl 为该笔交易已实现盈亏（USDT）。
+    timeframe：该笔交易使用的周期（学习引擎按 周期×策略 归因）。"""
     record = {
         "time": closed_at or now_iso(),
         "strategy": strategy,
         "symbol": symbol,
         "pnl": round(pnl, 4),
+        "timeframe": timeframe,
     }
     PERF_PATH.parent.mkdir(parents=True, exist_ok=True)
     with PERF_PATH.open("a", encoding="utf-8") as handle:
