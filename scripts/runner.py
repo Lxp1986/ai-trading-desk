@@ -207,6 +207,38 @@ def run_agents_work(indicators: dict, prev_state: dict,
         agents["聪明钱包研究员"] = agents["链上数据分析员"]
     except Exception as exc:
         agents["链上数据分析员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
+
+    # —— 板块轮动研究员：读鱼群扫描结果（guardian 15 分钟粒度更新）——
+    try:
+        from autotrader.movers import load_movers
+        movers = load_movers()
+        if movers.get("gainers"):
+            top = movers["gainers"][0]
+            hot = movers["hot_sectors"][0] if movers.get("hot_sectors") else None
+            parts = [f"领涨 {top['symbol']} {top['change_24h_pct']:+.1f}%"]
+            if hot:
+                parts.append(f"热点板块 {hot['sector']} {hot['avg_change_24h_pct']:+.1f}%")
+            parts.append(f"扫描 {movers['scanned']} 标的")
+            agents["板块轮动研究员"] = {"last_run": now, "status": "ok",
+                "output": " | ".join(parts)}
+            agents["资金流研究员"] = {"last_run": now, "status": "ok",
+                "output": f"异动 {len(movers['gainers'])} 涨 / {len(movers['losers'])} 跌 | 更新 {movers['updated_at']}"}
+        else:
+            agents["板块轮动研究员"] = {"last_run": now, "status": "idle",
+                "output": "鱼群扫描数据待更新（测试网网关恢复后自动）"}
+            agents["资金流研究员"] = agents["板块轮动研究员"]
+    except Exception as exc:
+        agents["板块轮动研究员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
+
+    # —— 策略研发员：汇总策略权重与绩效状态 ——
+    try:
+        from autotrader.strategy_tracker import strategy_weights
+        weights = strategy_weights()
+        active = [k for k, v in weights.items() if v > 0]
+        agents["策略研发员"] = {"last_run": now, "status": "ok",
+            "output": f"策略库 {len(weights)} 个 | 启用 {len(active)} 个 | 权重 {weights}"}
+    except Exception as exc:
+        agents["策略研发员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
     return agents
 
 

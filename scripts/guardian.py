@@ -33,6 +33,7 @@ PRICE_SYMBOL = "BTCUSDT"
 TICK = 60
 NEWS_EVERY = 5            # 5 分钟
 ONCHAIN_EVERY = 15        # 15 分钟
+MOVERS_EVERY = 15         # 15 分钟（鱼群扫描）
 SENTIMENT_EVERY = 60      # 60 分钟
 
 _last_price: float | None = None
@@ -116,6 +117,26 @@ def scan_onchain_every_15m() -> None:
         log(f"⚠️ 链上检测失败: {exc}")
 
 
+def scan_movers_every_15m() -> None:
+    """L1：全市场鱼群扫描（异动标的 + 热点板块，15 分钟粒度）。"""
+    try:
+        from autotrader.binance import BinanceAdapter
+        from autotrader.movers import scan_movers
+        client = BinanceAdapter(mode="testnet")
+        movers = scan_movers(client, top_n=8, min_volume_usdt=100)
+        if "error" in movers:
+            log(f"🎣 鱼群扫描失败: {movers['error']}")
+            return
+        top = movers["gainers"][0]
+        hot = movers["hot_sectors"][0] if movers["hot_sectors"] else None
+        msg = f"🎣 鱼群: 扫描 {movers['scanned']} 标的 | 领涨 {top['symbol']} {top['change_24h_pct']:+.1f}%"
+        if hot:
+            msg += f" | 热点板块 {hot['sector']} {hot['avg_change_24h_pct']:+.1f}%"
+        log(msg)
+    except Exception as exc:
+        log(f"⚠️ 鱼群扫描失败: {exc}")
+
+
 def update_sentiment_every_60m() -> None:
     """L2：情绪状态（60 分钟粒度，资金费率 8h 结算）。"""
     try:
@@ -138,6 +159,8 @@ def main() -> None:
                 scan_news_every_5m()
             if tick % ONCHAIN_EVERY == 0:
                 scan_onchain_every_15m()
+            if tick % MOVERS_EVERY == 0:
+                scan_movers_every_15m()
             if tick % SENTIMENT_EVERY == 0:
                 update_sentiment_every_60m()
             tick += 1

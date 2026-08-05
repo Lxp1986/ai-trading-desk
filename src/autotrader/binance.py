@@ -61,6 +61,14 @@ class BinanceAdapter(ExchangeAdapter):
     def ticker_price(self, symbol: str) -> dict[str, Any]:
         return self._request("GET", "/api/v3/ticker/price", {"symbol": symbol})
 
+    def ticker_24hr(self, symbol: str | None = None) -> list[dict[str, Any]] | dict[str, Any]:
+        """24 小时滚动行情（全市场或单标的，免费接口）。
+
+        symbol 为空时返回全部交易对（用于全市场鱼群扫描）。
+        """
+        params = {"symbol": symbol} if symbol else {}
+        return self._request("GET", "/api/v3/ticker/24hr", params)
+
     def klines(self, symbol: str, interval: str = "15m", limit: int = 60) -> list[dict[str, Any]]:
         payload = self._request("GET", "/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit})
         if not isinstance(payload, list):
