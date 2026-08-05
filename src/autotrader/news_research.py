@@ -70,3 +70,119 @@ def load_events(limit: int = 50) -> list[dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
     return events[-limit:]
+
+
+# ---------------------------------------------------------------- 确定性新闻采集
+# 免费公开 RSS 源（stdlib urllib + xml，零 Token）。抓取 → 关键词分级 → 落盘。
+# 供"宏观与新闻研究员"每轮主动履职，不依赖 Hermes 介入。
+
+NEWS_SOURCES = [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://cointelegraph.com/rss",
+]
+
+# 关键词 → 级别 / 方向（标题通常为英文）
+GRADE_A_KEYWORDS = (
+    "sec", "etf", "fed", "federal reserve", "rate cut", "rate hike", "halving",
+    "congress", "senate", "regulation", "lawsuit", "arrest", "hack", "exploit",
+    "bankruptcy", "cpi", "inflation", "crackdown", "ban", "sanction",
+)
+GRADE_B_KEYWORDS = (
+    "whale", "listing", "delisting", "upgrade", "partnership", "investment",
+    "acquisition", "funding", "launch", "mainnet", "airdrop", "unlock",
+    "inflow", "outflow", "spot", "stablecoin", "ethereum", "bitcoin spot",
+)
+BULL_KEYWORDS = (
+    "approve", "launch", "surge", "rally", "gain", "partnership", "adoption",
+    "inflow", "upgrade", "record", "all-time", "breakout", "buy",
+)
+BEAR_KEYWORDS = (
+    "hack", "exploit", "ban", "lawsuit", "crash", "drop", "outflow",
+    "reject", "delay", "inflation", "crackdown", "arrest", "bankruptcy",
+    "sue", "charge", "fraud", "sell", "liquidation",
+)
+
+
+def _fetch_rss(url: str, timeout: int = 10) -> list[dict[str, Any]]:
+    """抓取一个 RSS 源，返回 [{title, link, pub_date}]。"""
+    import urllib.request
+    from xml.etree import ElementTree
+
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (autotrader-research)"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read(300_000)
+    root = ElementTree.fromstring(body)
+    items: list[dict[str, Any]] = []
+    for item in root.iter("item"):
+        title_el = item.find("title")
+        link_el = item.find("link")
+        pub_el = item.find("pubDate")
+        title = (title_el.text or "").strip() if title_el is not None else ""
+        if not title:
+            continue
+        items.append({
+            "title": title[:220],
+            "link": (link_el.text or "").strip() if link_el is not None else "",
+            "pub_date": (pub_el.text or "").strip() if pub_el is not None else "",
+        })
+    return items
+
+
+def keyword_grade(title: str) -> tuple[str, str | None]:
+    """关键词规则分级：返回 (级别 A/B/C, 方向 bull/bear/None)。"""
+    t = title.lower()
+    bias: str | None = None
+    bull_hits = sum(1 for k in BULL_KEYWORDS if k in t)
+    bear_hits = sum(1 for k in BEAR_KEYWORDS if k in t)
+    if bull_hits > bear_hits:
+        bias = "bull"
+    elif bear_hits > bull_hits:
+        bias = "bear"
+    grade = "C"
+    if any(k in t for k in GRADE_A_KEYWORDS):
+        grade = "A"
+    elif any(k in t for k in GRADE_B_KEYWORDS):
+        grade = "B"
+    return grade, bias
+
+
+def scan_news(max_items: int = 60) -> dict[str, Any]:
+    """新闻研究员主动履职：抓取全部源 → 关键词分级 → A/B 级事件落盘。
+
+    去重：与 events.jsonl 已有标题（前 60 字）相同则跳过。
+    返回统计（供 Dashboard 展示当日产出）。
+    """
+    import urllib.error
+    from xml.etree import ElementTree as _ET
+
+    seen = {e.get("title", "")[:60] for e in load_events(500)}
+    fresh: list[dict[str, Any]] = []
+    a_events: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for url in NEWS_SOURCES:
+        try:
+            fresh.extend(_fetch_rss(url))
+        except (urllib.error.URLError, OSError, _ET.ParseError) as exc:
+            errors.append(f"{url.split('/')[2]}: {type(exc).__name__}")
+
+    for item in fresh[:max_items]:
+        if item["title"][:60] in seen:
+            continue
+        seen.add(item["title"][:60])
+        grade, bias = keyword_grade(item["title"])
+        if grade in ("A", "B"):
+            event = record_event(
+                title=item["title"], impact="unknown", assets=["BTC"],
+                grade=grade, bias=bias,
+                source="rss/" + item.get("link", "")[:80] or "rss",
+                details=f"自动抓取 {item.get('pub_date', '')}",
+            )
+            a_events.append(event)
+
+    return {
+        "fetched": len(fresh),
+        "recorded": len(a_events),
+        "a_grade": sum(1 for e in a_events if e["grade"] == "A"),
+        "b_grade": sum(1 for e in a_events if e["grade"] == "B"),
+        "errors": errors,
+    }

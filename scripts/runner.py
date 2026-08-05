@@ -185,21 +185,35 @@ def run_agents_work(indicators: dict, prev_state: dict,
     except Exception as exc:
         agents["事件交易员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
 
-    # —— 宏观与新闻研究员 / 链上 / 聪明钱包：研究型岗位由 CEO 定时扫描后落盘，
-    #    这里汇总其最近记录状态 ——
+    # —— 宏观与新闻研究员：每轮确定性抓取 RSS → 关键词分级 → 事件落盘 ——
     try:
-        agents["宏观与新闻研究员"] = {"last_run": now, "status": "ok",
-                                     "output": f"事件库 {len(events)} 条（CEO 定时扫描新闻源）"}
+        from autotrader.news_research import scan_news
+        news = scan_news()
+        agents["宏观与新闻研究员"] = {
+            "last_run": now, "status": "ok",
+            "output": f"抓取 {news['fetched']} 条新闻 | 新增 {news['recorded']} 条事件 "
+                      f"(A级 {news['a_grade']} / B级 {news['b_grade']})"
+                      + (f" | 源错误 {len(news['errors'])}" if news["errors"] else ""),
+        }
     except Exception as exc:
-        agents["宏观与新闻研究员"] = {"last_run": now, "status": "error", "output": str(exc)}
+        agents["宏观与新闻研究员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
+
+    # —— 链上数据分析员：每轮确定性抓取 BTC 网络 → 拥堵/巨鲸异动检测 ——
     try:
-        from autotrader.onchain import load_signals
-        signals = load_signals(limit=10)
+        from autotrader.onchain import load_signals, scan_btc_onchain
+        chain = scan_btc_onchain()
+        parts = []
+        if chain.get("congestion_fee_sat_vb"):
+            parts.append(f"拥堵 {chain['congestion_fee_sat_vb']} sats/vB")
+        if chain.get("whale_txns"):
+            parts.append(f"巨鲸异动 {chain['whale_txns']} 笔")
+        if not parts:
+            parts.append("网络正常")
         agents["链上数据分析员"] = {"last_run": now, "status": "ok",
-                                   "output": f"链上信号库 {len(signals)} 条（CEO 定时用链上工具扫描）"}
+                                   "output": f"BTC 链上: {' | '.join(parts)} | 新增信号 {chain['signals_recorded']}"}
         agents["聪明钱包研究员"] = agents["链上数据分析员"]
     except Exception as exc:
-        agents["链上数据分析员"] = {"last_run": now, "status": "error", "output": str(exc)}
+        agents["链上数据分析员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
     return agents
 
 
