@@ -31,6 +31,30 @@ ALERT_THRESHOLD_REJECTED = 5      # 连续否决数
 ALERT_THRESHOLD_TOKENS = 100_000  # 单日 token 突增阈值
 EVENT_WINDOW_MINUTES = 35         # 事件检查窗口（覆盖两轮 runner + 巡检间隔）
 
+# CEO 即时处理任务（看门狗告警时唤醒：hermes cron run 触发其立即处理）
+CEO_PROCESSING_JOB = "d64ac330cde3"
+
+
+def wake_ceo() -> None:
+    """双通道闭环：告警通知董事长的同时，唤醒 CEO 立即处理。
+
+    调用 hermes cron run 触发 CEO 告警即时处理任务（下一调度 tick 生效）。
+    失败不影响告警本身输出。
+    """
+    import shutil
+
+    hermes = shutil.which("hermes")
+    if not hermes:
+        return
+    try:
+        subprocess.Popen(
+            [hermes, "cron", "run", CEO_PROCESSING_JOB],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
 
 def now_cn() -> str:
     return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
@@ -149,7 +173,8 @@ def main() -> None:
         for alert in alerts:
             print(alert)
         print("")
-        print("*此消息由本地看门狗脚本自动生成。*")
+        print("*此消息由本地看门狗脚本自动生成；CEO 已同时被唤醒处理。*")
+        wake_ceo()  # 双通道：通知董事长的同时唤醒 CEO 立即处理
 
 
 if __name__ == "__main__":
