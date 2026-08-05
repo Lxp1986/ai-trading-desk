@@ -1,0 +1,74 @@
+{
+  "数据工程师": {
+    "price": 64321.14,
+    "trend": "sideways",
+    "rsi14": 47.49341804651965,
+    "atr14": 374.68714285714356,
+    "volume_ratio": 0.94
+  },
+  "技术分析员": {
+    "price": 64321.14,
+    "trend": "sideways",
+    "rsi14": 47.49341804651965,
+    "atr14": 374.68714285714356,
+    "volume_ratio": 0.94
+  },
+  "市场状态官": {
+    "price": 64321.14,
+    "trend": "sideways",
+    "rsi14": 47.49341804651965,
+    "atr14": 374.68714285714356,
+    "volume_ratio": 0.94
+  },
+  "策略研究员": {
+    "signals": [
+      {
+        "strategy": "pullback_rebound",
+        "action": "buy",
+        "strength": 0.69,
+        "reason": "多头排列回踩 EMA50（0.25 ATR），RSI 47 修复中",
+        "conditions": {
+          "distance_atr": 0.25,
+          "rsi": 47.5
+        }
+      }
+    ],
+    "event_count": 0
+  },
+  "情绪与传播研究员": {
+    "state": "neutral",
+    "funding_annual_pct": 1.7,
+    "score": 0.002,
+    "evidence": {
+      "funding_annual_pct": 1.7,
+      "rsi14": 47.5
+    }
+  },
+  "组合经理": {
+    "starting_cash": 277.0,
+    "cash": 270.564942,
+    "positions": {
+      "BTCUSDT": {
+        "quantity": 0.0001,
+        "avg_cost": 64350.579999999994,
+        "cost_basis": 6.435058
+      }
+    },
+    "position_value": 6.432114,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": -0.002944,
+    "equity": 276.997056,
+    "max_drawdown_pct": 0.0
+  },
+  "风险官": {
+    "consecutive_losses": 0,
+    "drawdown_pct": 0.0,
+    "daily_loss": 0.0,
+    "trading_halted": false,
+    "halt_reasons": []
+  },
+  "事件交易员": {
+    "plans": [],
+    "note": "当前无 A/B 级事件，事件交易员待命"
+  }
+}
