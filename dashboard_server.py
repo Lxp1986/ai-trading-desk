@@ -11,7 +11,7 @@ STATE = ROOT / "artifacts" / "state.json"
 SIGNALS = ROOT / "artifacts" / "signals.jsonl"
 WEIGHTS = ROOT / "artifacts" / "strategy_weights.json"
 EVENTS = ROOT / "artifacts" / "events.jsonl"
-STARTING_CAPITAL_USDT = 277.0
+STARTING_CAPITAL_USDT = 80000.0  # OKX 模拟盘重置后总权益
 
 import sys
 sys.path.insert(0, str(ROOT / "src"))
@@ -168,9 +168,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         return {
             "mode": "simulation",
-            "network": "Binance Spot Testnet",
+            "network": "OKX Demo Trading（模拟盘）",
             "currency": "USDT",
             "starting_capital": STARTING_CAPITAL_USDT,
+            "okx_account": state.get("okx_account", {}),
+            "base_cash": state.get("base_cash"),
             "nav": portfolio.get("equity", STARTING_CAPITAL_USDT),
             "cash": portfolio.get("cash", STARTING_CAPITAL_USDT),
             "positions": portfolio.get("positions", {}),

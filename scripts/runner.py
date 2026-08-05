@@ -32,6 +32,7 @@ from autotrader.binance_testnet import BinanceSpotTestnet  # noqa: E402
 from autotrader.market import build_snapshot, compute_indicators, load_klines  # noqa: E402
 from autotrader.portfolio import load_orders, portfolio_snapshot  # noqa: E402
 from autotrader.risk import compute_state  # noqa: E402
+from autotrader.portfolio import STARTING_CASH_USDT as STARTING_CASH  # noqa: E402
 from autotrader.strategy import apply_strategies  # noqa: E402
 from autotrader.sentiment import assess_sentiment, fetch_funding_rate, save_sentiment  # noqa: E402
 from autotrader.event_trader import plan as event_plan  # noqa: E402
@@ -129,7 +130,7 @@ def run_agents_work(indicators: dict, prev_state: dict,
     agents["成本与资源管理员"] = {"last_run": now, "status": "ok", "output": "Token 用量登记与成本监控（record_usage）"}
     agents["API与应急响应官"] = {"last_run": now, "status": "ok", "output": "看门狗每 30 分钟巡检，异常立即告警"}
     agents["执行交易员"] = {"last_run": now, "status": "ok",
-                           "output": "测试网适配器就绪（Binance/Hyperliquid），订单经风控后执行"}
+                           "output": "OKX 模拟盘主通道（Binance/HL 兜底），订单经风控后执行"}
     agents["CEO / 总交易代理"] = {"last_run": now, "status": "ok",
                                  "output": "每日 10/22 点研究+决策介入（cron），重大事件立即处理"}
 
@@ -253,30 +254,40 @@ def run_agents_work(indicators: dict, prev_state: dict,
     return agents
 
 
-def run_once(client: BinanceSpotTestnet, prev_state: dict,
-             fallback_client=None, fallback_exec_clients: list | None = None) -> dict:
+def run_once(client, prev_state: dict,
+             fallback_client=None, fallback_exec_clients: list | None = None,
+             account_client=None) -> dict:
     """执行一轮采集+计算，返回本轮状态。
 
-    fallback_client：主客户端（Binance 测试网）故障时自动切换
-    （Hyperliquid 测试网兜底，K 线格式已归一化兼容）。保证 502 频发时
-    行情/机会扫描/员工履职不整轮停摆。
+    主客户端 = OKX Demo Trading（模拟盘，行情/执行/账户全链路）。
+    fallback_client：主客户端故障时切换（Binance 测试网/Hyperliquid 兜底）。
+    account_client：账户资金基准客户端（OKX，读总权益用于仓位计算）。
     """
     symbol = "BTCUSDT"
-    snapshot_source = "binance_testnet"
+    snapshot_source = "okx_demo"
     try:
         snapshot = build_snapshot(client, symbol, "15m", 60)
     except Exception:
         if fallback_client is None:
             raise
-        log("⚠️ 主客户端（Binance 测试网）故障，切换 Hyperliquid 兜底")
-        symbol = "BTC"  # HL 符号无 USDT 后缀
+        log("⚠️ 主客户端（OKX Demo）故障，切换兜底")
         snapshot = build_snapshot(fallback_client, symbol, "15m", 60)
-        snapshot_source = "hyperliquid_testnet"
+        snapshot_source = "fallback"
     indicators = compute_indicators(load_klines(symbol, "15m", 60))
     prices = {snapshot.symbol: snapshot.price}
     orders = load_orders()
-    risk_state = compute_state(orders, prices)
-    portfolio = portfolio_snapshot(orders, prices)
+    # 资金基准优先 OKX 总权益（模拟盘重置后 ~$80k），未取到回退本地账本起始
+    okx_eq = None
+    try:
+        if account_client is not None:
+            okx_eq = float(account_client.account().get("total_usd", 0) or 0)
+    except Exception:
+        okx_eq = None
+    base_cash = okx_eq if okx_eq and okx_eq > 0 else None
+    risk_state = compute_state(orders, prices,
+                               start_cash=base_cash if base_cash else STARTING_CASH)
+    portfolio = portfolio_snapshot(orders, prices,
+                                   start_cash=base_cash if base_cash else STARTING_CASH)
 
     prev_risk = prev_state.get("risk", {})
     prev_halted = prev_risk.get("trading_halted", False)
@@ -296,7 +307,7 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
         except Exception:
             if fallback_client is None:
                 raise
-            log("⚠️ 机会扫描主客户端失败，切换 Hyperliquid 兜底")
+            log("⚠️ 机会扫描主客户端失败，切换兜底")
             opportunities = scan_opportunities(fallback_client)
         save_opportunities(opportunities)
         if opportunities.get("opportunities"):
@@ -304,6 +315,25 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
                 f"({', '.join(o['symbol'] for o in opportunities['opportunities'][:3])})")
     except Exception as exc:
         log(f"⚠️ 机会扫描失败: {exc}")
+
+    # 账户资金基准（OKX 模拟盘总权益 → 仓位与总资金匹配；USDT 可用 → 下单名义上限）
+    okx_account: dict = {}
+    max_notional: float | None = None
+    if account_client is not None:
+        try:
+            okx_account = account_client.account()
+            eq = float(okx_account.get("total_usd", 0) or 0)
+            if eq > 0:
+                base_cash = eq  # 与前段风控基准一致
+            for bal in okx_account.get("balances", []):
+                if bal.get("coin") == "USDT":
+                    avail_usdt = float(bal.get("availBal", 0) or 0)
+                    # 单笔名义金额 ≤ 可用 USDT × 30%（3 持仓最多 90% 可用现金）
+                    max_notional = avail_usdt * 0.30
+                    break
+        except Exception as exc:
+            if base_cash is None:
+                log(f"⚠️ OKX 账户读取失败（沿用本地账本现金）: {exc}")
 
     # 学习引擎（交易/事件/信号三通道 · 每轮自动学习升级）
     try:
@@ -338,7 +368,8 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
             sym = top["symbol"]
             px = (prices or {}).get(sym)
             opened = open_position(client, sym, top["best"], px,
-                                   fallback_client=fallback_exec_clients or fallback_client)
+                                   fallback_client=fallback_exec_clients or fallback_client,
+                                   cash=base_cash, max_notional=max_notional)
             if opened.get("ok"):
                 log(f"🟢 开仓: {sym} {opened['quantity']}（{opened['reason']}）")
             elif opened.get("action") != "no_open":
@@ -362,6 +393,8 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
             "halt_reasons": list(risk_state.halt_reasons),
         },
         "portfolio": portfolio,
+        "okx_account": okx_account,
+        "base_cash": base_cash,
         "agents": run_agents_work(indicators, prev_state, snapshot, risk_state, portfolio),
         "events_recent": len(events),
     }
@@ -381,25 +414,45 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="只跑一轮后退出")
     args = parser.parse_args()
 
-    client = BinanceSpotTestnet()
-    # 兜底客户端：Binance 测试网 502 时自动切换（Hyperliquid 测试网，行情/扫描）
-    try:
-        from autotrader.hyperliquid import HyperliquidAdapter
-        fallback_client = HyperliquidAdapter(mode="testnet")
-        log("✅ Hyperliquid 兜底客户端就绪（Binance 502 时自动切换）")
-    except Exception as exc:
-        fallback_client = None
-        log(f"⚠️ Hyperliquid 兜底客户端不可用: {exc}")
-    # 执行兜底链（下单用）：OKX Demo → Hyperliquid
-    fallback_exec_clients: list = []
+    # 主客户端 = OKX Demo Trading（模拟盘：行情/执行/账户全链路）
+    client = None
     try:
         from autotrader.okx import OkxDemoAdapter
-        fallback_exec_clients.append(OkxDemoAdapter())
-        log("✅ OKX Demo 执行兜底就绪（无需充值，虚拟资金）")
+        client = OkxDemoAdapter(timeout_seconds=20)
+        log("✅ 主客户端 = OKX Demo Trading（模拟盘，总权益为仓位基准）")
     except Exception as exc:
-        log(f"⚠️ OKX Demo 执行兜底不可用: {exc}")
+        log(f"⚠️ OKX Demo 客户端不可用: {exc}")
+    # 兜底客户端：主客户端故障时切换（Binance 测试网 → Hyperliquid）
+    fallback_client = None
+    try:
+        from autotrader.binance_testnet import BinanceSpotTestnet
+        fallback_client = BinanceSpotTestnet()
+        log("✅ Binance 测试网兜底客户端就绪（OKX 故障时切换）")
+    except Exception as exc:
+        log(f"⚠️ Binance 兜底不可用: {exc}")
+    if fallback_client is None:
+        try:
+            from autotrader.hyperliquid import HyperliquidAdapter
+            fallback_client = HyperliquidAdapter(mode="testnet")
+            log("✅ Hyperliquid 测试网兜底客户端就绪")
+        except Exception as exc:
+            log(f"⚠️ Hyperliquid 兜底不可用: {exc}")
+    if client is None:
+        if fallback_client is None:
+            raise RuntimeError("无可用客户端（OKX/Binance/HL 全部不可用）")
+        client = fallback_client
+        fallback_client = None
+    # 执行兜底链（下单用）：主客户端失败 → Binance → Hyperliquid
+    fallback_exec_clients: list = []
     if fallback_client is not None:
         fallback_exec_clients.append(fallback_client)
+    try:
+        from autotrader.hyperliquid import HyperliquidAdapter
+        fallback_exec_clients.append(HyperliquidAdapter(mode="testnet"))
+        log("✅ Hyperliquid 执行兜底就绪")
+    except Exception as exc:
+        log(f"⚠️ Hyperliquid 执行兜底不可用: {exc}")
+    account_client = client  # 账户资金基准 = OKX
     prev_state: dict = {}
     if STATE_PATH.exists():
         try:
@@ -418,7 +471,7 @@ def main() -> None:
     while True:
         try:
             prev_state = run_once(client, prev_state, fallback_client,
-                                  fallback_exec_clients)
+                                  fallback_exec_clients, account_client)
         except Exception as exc:  # 单轮失败不阻塞循环
             log(f"本轮失败（继续下一轮）: {exc}")
         if args.once:

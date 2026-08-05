@@ -33,11 +33,12 @@ class BinanceSpotTestnet(BinanceAdapter):
         return self._order("/api/v3/order/test", symbol=symbol, side=side,
                            quantity=quantity, order_type=order_type, price=price)
 
-    def create_order(self, *, symbol: str, side: str, quantity: str,
-                     order_type: str = "MARKET", price: str | None = None) -> dict[str, Any]:
+    def create_order(self, *, symbol: str, side: str, quantity: float | str,
+                     order_type: str = "MARKET", price: str | float | None = None) -> dict[str, Any]:
         """Place a virtual order on Spot Testnet; never on production Binance."""
         return self._order("/api/v3/order", symbol=symbol, side=side,
-                           quantity=quantity, order_type=order_type, price=price)
+                           quantity=str(quantity), order_type=order_type,
+                           price=None if price is None else str(price))
 
     def _order(self, path: str, *, symbol: str, side: str, quantity: str,
                order_type: str, price: str | None) -> dict[str, Any]:

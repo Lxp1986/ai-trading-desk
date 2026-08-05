@@ -76,14 +76,20 @@ class OkxDemoAdapter(ExchangeAdapter):
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
     def _sign(self, ts: str, method: str, path: str, body: str, secret: str) -> str:
-        message = ts + method + path + body
-        return hmac.new(secret.encode("utf-8"), message.encode("utf-8"),
-                        hashlib.sha256).hexdigest()
+        # OKX 官方：HMAC-SHA256(timestamp + method + path + body, secret)，输出 base64
+        import base64
+        message = ts + method + body
+        if path:
+            message = ts + method + path + body
+        digest = hmac.new(secret.encode("utf-8"), message.encode("utf-8"),
+                          hashlib.sha256).digest()
+        return base64.b64encode(digest).decode("ascii")
 
     def _request(self, method: str, path: str, params: dict[str, Any] | None = None,
                  body: dict[str, Any] | None = None, signed: bool = False,
                  public: bool = False) -> Any:
         url = BASE_URL + path
+        query = ""
         if params:
             query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
             url = url + "?" + query
@@ -98,8 +104,11 @@ class OkxDemoAdapter(ExchangeAdapter):
         if signed:
             key, secret, passphrase = self._credentials()
             ts = self._timestamp()
+            # OKX 签名路径 = request path + query（完整）
+            sign_path = path + ("?" + query if query else "")
             headers["OK-ACCESS-KEY"] = key
-            headers["OK-ACCESS-SIGN"] = self._sign(ts, method, path, data.decode("utf-8") or "", secret)
+            headers["OK-ACCESS-SIGN"] = self._sign(ts, method, sign_path,
+                                                   data.decode("utf-8") or "", secret)
             headers["OK-ACCESS-TIMESTAMP"] = ts
             headers["OK-ACCESS-PASSPHRASE"] = passphrase
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -127,8 +136,16 @@ class OkxDemoAdapter(ExchangeAdapter):
                 if float(data[0].get("open24h", 0)) else 0.0}
 
     def klines(self, symbol: str, interval: str = "15m", limit: int = 60) -> list[dict[str, Any]]:
+        # OKX bar 单位大写：1h→1H / 1d→1D / 1w→1W（分钟单位不变）
+        bar = interval
+        if bar.endswith("h"):
+            bar = bar[:-1] + "H"
+        elif bar.endswith("d"):
+            bar = bar[:-1] + "D"
+        elif bar.endswith("w"):
+            bar = bar[:-1] + "W"
         result = self._request("GET", "/api/v5/market/candles",
-                               {"instId": _to_okx(symbol), "bar": interval, "limit": min(limit, 300)},
+                               {"instId": _to_okx(symbol), "bar": bar, "limit": min(limit, 300)},
                                public=True)
         candles: list[dict[str, Any]] = []
         for row in result.get("data", []):
@@ -153,18 +170,57 @@ class OkxDemoAdapter(ExchangeAdapter):
         return {"address": "okx-demo", "balances": balances,
                 "total_usd": float(data[0].get("totalEq", 0) or 0)}
 
+    def position(self, symbol: str | None = None) -> dict[str, Any]:
+        """现货持仓（通过账户余额查询该币可用数量）。"""
+        if symbol is None:
+            return {"symbol": None, "free": 0.0, "total": 0.0, "ccy": None}
+        inst_id = _to_okx(symbol)
+        base = inst_id.split("-")[0]
+        result = self._request("GET", "/api/v5/account/balance", signed=True)
+        details = (result.get("data") or [{}])[0].get("details", [])
+        for bal in details:
+            if bal.get("ccy") == base:
+                return {"symbol": symbol, "free": float(bal.get("availBal", 0) or 0),
+                        "total": float(bal.get("cashBal", 0) or 0), "ccy": base}
+        return {"symbol": symbol, "free": 0.0, "total": 0.0, "ccy": base}
+
+    def positions(self) -> list[dict[str, Any]]:
+        """现货全部持仓（余额中数量 > 0 的币）。"""
+        result = self._request("GET", "/api/v5/account/balance", signed=True)
+        out = []
+        details = (result.get("data") or [{}])[0].get("details", [])
+        for bal in details:
+            qty = float(bal.get("cashBal", 0) or 0)
+            if qty > 0 and bal.get("ccy") not in ("USDT", "USDC"):
+                out.append({"symbol": f"{bal['ccy']}USDT",
+                            "free": float(bal.get("availBal", 0) or 0),
+                            "total": qty, "ccy": bal["ccy"]})
+        return out
+
     # ---------- 订单 ----------
 
     def create_order(self, *, symbol: str, side: str, quantity: float,
                      order_type: str = "MARKET", price: float | None = None) -> OrderResult:
         inst_id = _to_okx(symbol)
+        is_market = order_type.upper() == "MARKET" or price is None
         body: dict[str, Any] = {
             "instId": inst_id, "tdMode": "cash", "side": side.lower(),
-            "ordType": "market" if order_type.upper() == "MARKET" or price is None else "limit",
-            "sz": f"{quantity:.6f}",
+            "ordType": "market" if is_market else "limit",
         }
-        if body["ordType"] == "limit" and price:
-            body["px"] = f"{price:.6f}"
+        if is_market:
+            if side.upper() == "BUY":
+                # 模拟盘市价买单必须按金额（quote_ccy）；金额 = 数量 × 当前价
+                px = float(self.ticker_price(symbol)["price"])
+                amt = round(quantity * px, 2)
+                body["sz"] = f"{amt:.2f}"
+                body["tgtCcy"] = "quote_ccy"
+            else:
+                body["sz"] = f"{quantity:.8f}".rstrip("0").rstrip(".")
+                body["tgtCcy"] = "base_ccy"
+        else:
+            body["sz"] = f"{quantity:.8f}".rstrip("0").rstrip(".")
+            if price:
+                body["px"] = f"{price:.1f}"
         result = self._request("POST", "/api/v5/trade/order", body=body, signed=True)
         data = result.get("data", [{}])[0]
         if data.get("sCode") != "0":

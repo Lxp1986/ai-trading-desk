@@ -22,16 +22,19 @@ class OkxAdapterTest(unittest.TestCase):
         self.adapter = OkxDemoAdapter()
 
     def test_signature_format(self):
-        """签名 = HMAC-SHA256(ts + method + path + body, secret)。"""
+        """签名 = base64(HMAC-SHA256(ts + method + path + body, secret))——官方规范。"""
         ts = "2026-08-05T12:00:00.000Z"
         sig = self.adapter._sign(ts, "POST", "/api/v5/trade/order",
                                  '{"instId":"BTC-USDT"}', "secret123")
+        import base64
         import hashlib
         import hmac as _hmac
-        expected = _hmac.new(b"secret123",
-                             (ts + "POST" + "/api/v5/trade/order" + '{"instId":"BTC-USDT"}').encode(),
-                             hashlib.sha256).hexdigest()
+        digest = _hmac.new(b"secret123",
+                           (ts + "POST" + "/api/v5/trade/order" + '{"instId":"BTC-USDT"}').encode(),
+                           hashlib.sha256).digest()
+        expected = base64.b64encode(digest).decode("ascii")
         self.assertEqual(sig, expected)
+        self.assertNotIn("=", sig[:-2])  # base64 特征
 
     @patch.object(okx.OkxDemoAdapter, "_request")
     def test_ticker(self, mock_request):
@@ -59,6 +62,7 @@ class OkxAdapterTest(unittest.TestCase):
     def test_create_order(self, mock_creds, mock_request):
         mock_creds.return_value = ("key", "secret", "pass")
         mock_request.side_effect = [
+            {"code": "0", "data": [{"last": "64350.0", "open24h": "64000"}]},  # ticker（市价买单查价）
             {"code": "0", "data": [{"sCode": "0", "ordId": "12345"}]},  # 下单
             {"code": "0", "data": [{"state": "filled", "fillPx": "64350"}]},  # 状态查询
         ]
@@ -66,14 +70,16 @@ class OkxAdapterTest(unittest.TestCase):
         self.assertEqual(result.order_id, "12345")
         self.assertEqual(result.status, "FILLED")
         self.assertEqual(result.avg_fill_price, 64350.0)
-        # 下单请求体校验
-        call = mock_request.call_args_list[0]
-        self.assertEqual(call.args[0], "POST")
-        self.assertEqual(call.args[1], "/api/v5/trade/order")
-        body = call.kwargs["body"] if "body" in call.kwargs else call.args[2]
+        # 下单请求体校验（第 2 个 call 是下单 POST，第 1 个是 ticker GET）
+        calls = mock_request.call_args_list
+        order_call = calls[1]
+        self.assertEqual(order_call.args[0], "POST")
+        self.assertEqual(order_call.args[1], "/api/v5/trade/order")
+        body = order_call.kwargs["body"] if "body" in order_call.kwargs else order_call.args[2]
         self.assertEqual(body["instId"], "BTC-USDT")
         self.assertEqual(body["tdMode"], "cash")
-        self.assertTrue(body["sz"], "0.001000")
+        self.assertTrue(body["sz"])
+        self.assertEqual(body["tgtCcy"], "quote_ccy")
 
     def test_live_guard(self):
         """Demo 适配器永远非实盘。"""

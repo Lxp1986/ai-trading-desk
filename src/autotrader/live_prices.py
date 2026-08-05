@@ -50,6 +50,40 @@ def _get_json(url: str, max_bytes: int = 1_000_000, timeout: float = 10) -> Any:
         return json.loads(resp.read(max_bytes + 1).decode("utf-8"))
 
 
+def _fetch_okx() -> dict[str, dict[str, Any]] | None:
+    """OKX 现货批量 ticker（第一行情源：一次请求全部 SPOT 价格）。
+
+    /api/v5/market/tickers?instType=SPOT 返回全市场现货（含 24h 统计），
+    本地解析观察池——比逐标的请求快一个数量级。
+    """
+    try:
+        url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
+        data = _get_json(url, timeout=8)
+        by_symbol: dict[str, dict] = {}
+        for t in data.get("data", []):
+            inst = t.get("instId", "")
+            if inst.endswith("-USDT"):
+                by_symbol[inst.replace("-USDT", "USDT")] = t
+        rows: dict[str, dict[str, Any]] = {}
+        for item in WATCHLIST:
+            t = by_symbol.get(item["symbol"])
+            if not t:
+                continue
+            price = float(t.get("last", 0) or 0)
+            if price <= 0:
+                continue
+            rows[item["symbol"]] = {
+                "price": price,
+                "change_24h": (float(t.get("open24h", 0) or 0) and
+                               (price / float(t["open24h"]) - 1) * 100) or None,
+                "volume_24h": float(t.get("volCcy24h", 0) or 0) * price,
+                "name": item["name"],
+            }
+        return rows or None
+    except Exception:
+        return None
+
+
 def _fetch_testnet() -> dict[str, dict[str, Any]] | None:
     """Binance 测试网单标的 ticker 循环（与模拟盘成交一致）。"""
     try:
@@ -164,7 +198,8 @@ def scan_live_prices() -> dict[str, Any]:
     24h 涨跌/成交额由 CoinGecko 补充合并（价格源不提供时，5 分钟缓存）。
     返回 {"prices": {SYMBOL: {..., "exchange": "..."}}, "source": "...", "updated_at": "..."}
     """
-    for fetcher, exchange in ((_fetch_testnet, "binance_testnet"),
+    for fetcher, exchange in ((_fetch_okx, "okx"),
+                              (_fetch_testnet, "binance_testnet"),
                               (_fetch_hyperliquid, "hyperliquid_testnet"),
                               (_fetch_coingecko, "coingecko")):
         rows = fetcher()

@@ -64,20 +64,23 @@ def raise_alert(level: str, summary: str) -> None:
 
 _ORDER_CLIENT = None
 _HL_CLIENT = None
-_OKX_CLIENT = None
+_BINANCE_CLIENT = None
 
 
 def _order_client():
-    """下单客户端（懒加载：Binance Spot Testnet，仅止损平仓/调仓使用）。"""
+    """下单客户端（懒加载：OKX Demo Trading 主通道，仅止损平仓/调仓使用）。"""
     global _ORDER_CLIENT
     if _ORDER_CLIENT is None:
-        from autotrader.binance_testnet import BinanceSpotTestnet
-        _ORDER_CLIENT = BinanceSpotTestnet()
+        try:
+            from autotrader.okx import OkxDemoAdapter
+            _ORDER_CLIENT = OkxDemoAdapter(timeout_seconds=20)
+        except Exception:
+            _ORDER_CLIENT = None
     return _ORDER_CLIENT
 
 
 def _hl_client():
-    """Hyperliquid 兜底下单客户端（懒加载；Binance 502 时止损兜底）。"""
+    """Hyperliquid 兜底下单客户端（懒加载；OKX 故障时止损兜底）。"""
     global _HL_CLIENT
     if _HL_CLIENT is None:
         try:
@@ -88,21 +91,21 @@ def _hl_client():
     return _HL_CLIENT
 
 
-def _okx_client():
-    """OKX Demo Trading 兜底下单客户端（懒加载；无需充值，自带虚拟资金）。"""
-    global _OKX_CLIENT
-    if _OKX_CLIENT is None:
+def _binance_client():
+    """Binance 测试网兜底客户端（懒加载）。"""
+    global _BINANCE_CLIENT
+    if _BINANCE_CLIENT is None:
         try:
-            from autotrader.okx import OkxDemoAdapter
-            _OKX_CLIENT = OkxDemoAdapter()
+            from autotrader.binance_testnet import BinanceSpotTestnet
+            _BINANCE_CLIENT = BinanceSpotTestnet()
         except Exception:
-            _OKX_CLIENT = None
-    return _OKX_CLIENT
+            _BINANCE_CLIENT = None
+    return _BINANCE_CLIENT
 
 
 def _fallback_clients():
-    """兜底下单客户端链（OKX Demo 优先，HL 次之）。"""
-    return [c for c in (_okx_client(), _hl_client()) if c is not None]
+    """兜底下单客户端链（主通道 OKX 故障时：Binance → HL）。"""
+    return [c for c in (_binance_client(), _hl_client()) if c is not None]
 
 
 def check_price() -> None:

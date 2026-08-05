@@ -323,9 +323,9 @@ def _execute(client: Any, symbol: str, side: str, qty: float, reason: str,
     order = None
     order_err = ""
     try:
-        # 真实下单（create_order 走 /api/v3/order 实际成交；create_test_order 仅校验）
+        # 真实下单（create_order 走真实成交；数量统一传 float，适配器内部格式化）
         order = client.create_order(symbol=symbol, side=side,
-                                    quantity=f"{round(qty, 6):.6f}")
+                                    quantity=round(qty, 6))
     except Exception as exc:
         order_err = str(exc)[:100]
         # 主客户端故障 → 兜底链逐个尝试（如 [OKX Demo, Hyperliquid]）
@@ -347,6 +347,15 @@ def _execute(client: Any, symbol: str, side: str, qty: float, reason: str,
         return {"symbol": symbol, "action": f"{side}_failed", "reason": reason,
                 "error": order_err[:160], "ok": False}
     try:
+        # 统一订单返回格式（Binance dict / OKX OrderResult 对象）
+        if not hasattr(order, "get"):
+            order = {
+                "orderId": getattr(order, "order_id", None),
+                "status": getattr(order, "status", None),
+                "price": getattr(order, "price", None),
+                "avgFillPrice": getattr(order, "avg_fill_price", None),
+                "transactTime": getattr(order, "created_at", None),
+            }
         logged_at = now_iso()
         # 账本（主记录）
         entry = {
@@ -386,7 +395,9 @@ MAX_POSITIONS = 3          # 最多同时持仓数（分散风险）
 def open_position(client: Any, symbol: str, signal: dict[str, Any],
                   price: float | None = None,
                   events: list[dict[str, Any]] | None = None,
-                  fallback_client: Any = None) -> dict[str, Any]:
+                  fallback_client: Any = None,
+                  cash: float | None = None,
+                  max_notional: float | None = None) -> dict[str, Any]:
     """开仓引擎：信号 → 风控闸门 → 仓位计算 → 下单 → 账本审计。
 
     风控闸门（全部强制）：
@@ -397,7 +408,9 @@ def open_position(client: Any, symbol: str, signal: dict[str, Any],
     - 价格新鲜度（_latest_price 已校验）
 
     仓位计算：单笔风险预算 = 现金 × 1% ÷ 止损距离(%)；
-    上限 = 现金 × MAX_POSITION_PCT；下限 = MIN_TRADE_USDT。
+    上限 = min(现金 × MAX_POSITION_PCT, 可用现金 × 30% 名义金额)；下限 = MIN_TRADE_USDT。
+    cash 参数：外部资金基准（如 OKX 模拟盘总权益）；未传时用本地账本现金。
+    max_notional：可用下单名义金额上限（如 OKX USDT 可用余额 × 30%）。
     """
     if str(signal.get("action", "")).lower() != "buy":
         return {"symbol": symbol, "action": "no_open", "reason": "非买入信号", "ok": False}
@@ -417,18 +430,20 @@ def open_position(client: Any, symbol: str, signal: dict[str, Any],
     px = price or _latest_price(symbol)
     if not px or px <= 0:
         return {"symbol": symbol, "action": "no_open", "reason": "价格不可用", "ok": False}
-    # 仓位计算：风险预算法
+    # 仓位计算：风险预算法（现金基准优先外部传入，如 OKX 总权益）
     from autotrader.portfolio import cash_balance, load_orders
     orders = load_orders(ORDERS_PATH) if ORDERS_PATH.exists() else []
-    cash = cash_balance(orders)
-    if cash <= 0:
+    base_cash = cash if cash and cash > 0 else cash_balance(orders)
+    if base_cash <= 0:
         return {"symbol": symbol, "action": "no_open", "reason": "无可用现金", "ok": False}
     levels = levels_for(symbol)
     stop_dist_pct = levels["stop_loss_pct"]  # 止损距离（%）
-    risk_budget = cash * 0.01                 # 单笔风险预算 = 现金 1%
+    risk_budget = base_cash * 0.01            # 单笔风险预算 = 现金 1%（硬上限）
     risk_qty = (risk_budget / (px * stop_dist_pct / 100)) if stop_dist_pct > 0 else 0.0
-    cap_qty = (cash * MAX_POSITION_PCT / 100) / px
+    cap_qty = (base_cash * MAX_POSITION_PCT / 100) / px
     qty = min(risk_qty, cap_qty)
+    if max_notional and max_notional > 0:
+        qty = min(qty, max_notional / px)     # 可用现金约束（如 OKX USDT × 30%）
     if qty * px < MIN_TRADE_USDT:
         return {"symbol": symbol, "action": "no_open",
                 "reason": f"开仓金额 {qty * px:.2f} < {MIN_TRADE_USDT} USDT（过小）", "ok": False}
