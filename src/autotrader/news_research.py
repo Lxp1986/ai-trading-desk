@@ -184,5 +184,6 @@ def scan_news(max_items: int = 60) -> dict[str, Any]:
         "recorded": len(a_events),
         "a_grade": sum(1 for e in a_events if e["grade"] == "A"),
         "b_grade": sum(1 for e in a_events if e["grade"] == "B"),
+        "a_titles": [e["title"][:100] for e in a_events if e["grade"] == "A"],
         "errors": errors,
     }

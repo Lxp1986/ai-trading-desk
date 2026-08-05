@@ -98,7 +98,9 @@ def scan_news_every_5m() -> None:
         if news["recorded"]:
             log(f"📰 新闻: 抓 {news['fetched']} 条 | 新增 {news['recorded']} 事件 (A{news['a_grade']}/B{news['b_grade']})")
             if news["a_grade"]:
-                raise_alert("action", f"新增 {news['a_grade']} 条 A级新闻事件，CEO 应关注")
+                # 告警自带内容：A级新闻标题直接进 summary，董事长收到即看到
+                titles = "；".join(news.get("a_titles", [])[:3])
+                raise_alert("action", f"新增 {news['a_grade']} 条 A级新闻：{titles}")
     except Exception as exc:
         log(f"⚠️ 新闻抓取失败: {exc}")
 
