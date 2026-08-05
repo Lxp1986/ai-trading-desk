@@ -43,12 +43,12 @@
 ├── 本地数据库/审计文件
 ├── 本地模拟交易引擎
 └── 本地Dashboard（仅监听 127.0.0.1）
-                         └── 需要时访问 DeepSeek API
+                         └── 需要时经Hermes路由调用当前可用模型
 ```
 
 这里的“本地服务器”只是Mac上绑定 `127.0.0.1` 的进程，不是公网服务器，局域网其他设备默认也不能访问。界面计划显示：净值/盈亏、持仓、交易假设、风控状态、策略状态、API/Token/资金预警、系统日志和经营报告。
 
-安全原则：不开放公网端口、不使用端口转发、不把API Key放进前端、不允许Dashboard直接下单；即使未来接交易所，也由后台风控服务执行，界面只提交经过审计的操作请求。DeepSeek调用时只发送必要的结构化摘要，API Key留在本机环境变量中。
+安全原则：不开放公网端口、不使用端口转发、不把API Key放进前端、不允许Dashboard直接下单；即使未来接交易所，也由后台风控服务执行，界面只提交经过审计的操作请求。模型调用时只发送必要的结构化摘要，API Key留在本机环境变量中。
 
 因此，服务器不是必需品。只有在需要全天候运行、远程访问、多人协作或高可用时，才另行评估独立设备；当前优先留在本机，先完成本地Dashboard和模拟运行。
 
@@ -65,7 +65,17 @@
 
 ## 运行
 
+需要 Python ≥3.11（推荐 Homebrew 的 `python3.14`，项目在 3.14 下开发验证）。
+
 ```bash
-python3 -m unittest discover -s tests -v
+# 测试（unittest 需要 PYTHONPATH=src；或安装 pytest 后直接跑，pyproject 已配好 src 路径）
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+# 或：
+# python3 -m pip install pytest && python3 -m pytest
+
+# 模拟运行（脚本内已自行处理 src 路径）
 python3 examples/run_simulation.py
+
+# 本机 Dashboard（仅 127.0.0.1:8765，无公网端口）
+python3 dashboard_server.py
 ```
