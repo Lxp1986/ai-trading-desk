@@ -16,11 +16,14 @@ class _FakeClient:
     def __init__(self):
         self.orders: list[dict] = []
 
-    def create_test_order(self, symbol, side, quantity):
+    def create_order(self, *, symbol, side, quantity):
         order = {"orderId": len(self.orders) + 1, "symbol": symbol, "side": side,
                  "status": "FILLED", "avgFillPrice": 64000.0, "quantity": quantity}
         self.orders.append(order)
         return order
+
+    def create_test_order(self, *, symbol, side, quantity):
+        return self.create_order(symbol=symbol, side=side, quantity=quantity)
 
 
 def _seed_position(qty: float, avg_cost: float, symbol: str = "BTCUSDT") -> list[dict]:

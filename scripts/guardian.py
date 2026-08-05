@@ -63,6 +63,7 @@ def raise_alert(level: str, summary: str) -> None:
 
 
 _ORDER_CLIENT = None
+_HL_CLIENT = None
 
 
 def _order_client():
@@ -72,6 +73,18 @@ def _order_client():
         from autotrader.binance_testnet import BinanceSpotTestnet
         _ORDER_CLIENT = BinanceSpotTestnet()
     return _ORDER_CLIENT
+
+
+def _hl_client():
+    """Hyperliquid 兜底下单客户端（懒加载；Binance 502 时止损兜底）。"""
+    global _HL_CLIENT
+    if _HL_CLIENT is None:
+        try:
+            from autotrader.hyperliquid import HyperliquidAdapter
+            _HL_CLIENT = HyperliquidAdapter(mode="testnet")
+        except Exception:
+            _HL_CLIENT = None
+    return _HL_CLIENT
 
 
 def check_price() -> None:
@@ -94,7 +107,8 @@ def check_price() -> None:
                      if row.get("price")}
         mon = monitor_positions(price_map)
         if mon.get("count", 0) > 0:
-            emg = emergency_stop_loss(_order_client(), price_map)
+            emg = emergency_stop_loss(_order_client(), price_map,
+                                      fallback_client=_hl_client())
             if emg.get("executed"):
                 for ex in emg["executed"]:
                     write_event({

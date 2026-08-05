@@ -317,7 +317,8 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
     # 主动调仓（持仓实时管理：止盈/信号翻转/同向加仓；止损由 guardian 30s 兜底）
     try:
         from autotrader.position_manager import manage
-        manage_report = manage(client, signals=None, prices=prices)
+        manage_report = manage(client, signals=None, prices=prices,
+                               fallback_client=fallback_client)
         acted = [a for a in manage_report.get("actions", []) if a.get("ok")]
         if acted:
             summary = "; ".join("%s %s" % (a["symbol"], a["action"]) for a in acted[:3])
@@ -336,7 +337,8 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
             top = max(buys, key=lambda o: (o["best"] or {}).get("strength", 0))
             sym = top["symbol"]
             px = (prices or {}).get(sym)
-            opened = open_position(client, sym, top["best"], px)
+            opened = open_position(client, sym, top["best"], px,
+                                   fallback_client=fallback_client)
             if opened.get("ok"):
                 log(f"🟢 开仓: {sym} {opened['quantity']}（{opened['reason']}）")
             elif opened.get("action") != "no_open":

@@ -176,7 +176,8 @@ def monitor_positions(prices: dict[str, float] | None = None) -> dict[str, Any]:
 # ---------- 主动调仓决策（runner 每轮调用） ----------
 
 def manage(client: Any, signals: list[dict[str, Any]] | None = None,
-           prices: dict[str, float] | None = None) -> dict[str, Any]:
+           prices: dict[str, float] | None = None,
+           fallback_client: Any = None) -> dict[str, Any]:
     """完整调仓决策：止损 → 止盈 → 信号翻转 → 同向加仓。
 
     返回执行结果（动作列表）。
@@ -202,20 +203,23 @@ def manage(client: Any, signals: list[dict[str, Any]] | None = None,
         # 1) 止损（硬风控优先）
         if pnl_pct <= -levels["stop_loss_pct"]:
             result = _execute(client, symbol, "SELL", qty,
-                              f"止损平仓（浮亏 {pnl_pct:.2f}% ≤ -{levels['stop_loss_pct']}%）")
+                              f"止损平仓（浮亏 {pnl_pct:.2f}% ≤ -{levels['stop_loss_pct']}%）",
+                              fallback_client)
             actions.append(result)
             continue
         # 2) 止盈
         if pnl_pct >= levels["take_profit_pct"]:
             result = _execute(client, symbol, "SELL", qty,
-                              f"止盈平仓（浮盈 {pnl_pct:.2f}% ≥ {levels['take_profit_pct']}%）")
+                              f"止盈平仓（浮盈 {pnl_pct:.2f}% ≥ {levels['take_profit_pct']}%）",
+                              fallback_client)
             actions.append(result)
             continue
         # 3) 信号翻转（多头持仓 + sell 信号 → 平仓）
         sig = sig_by_symbol.get(symbol) or sig_by_symbol.get(symbol.replace("USDT", ""))
         if sig and str(sig.get("action", "")).lower() == "sell":
             result = _execute(client, symbol, "SELL", qty,
-                              f"信号翻转平仓（{sig.get('strategy', '')}: {sig.get('reason', '')[:50]}）")
+                              f"信号翻转平仓（{sig.get('strategy', '')}: {sig.get('reason', '')[:50]}）",
+                              fallback_client)
             actions.append(result)
             continue
         # 4) 同向信号 → 加仓（风控预算内：单笔风险 ≤ 现金 1%，最多加 1 次）
@@ -227,7 +231,8 @@ def manage(client: Any, signals: list[dict[str, Any]] | None = None,
             add_qty = budget / price if price > 0 else 0.0
             if add_qty >= qty * 0.1:  # 加仓量至少为持仓 10%
                 result = _execute(client, symbol, "BUY", add_qty,
-                                  f"同向加仓（{sig.get('strategy', '')}，预算 {budget:.2f} USDT）")
+                                  f"同向加仓（{sig.get('strategy', '')}，预算 {budget:.2f} USDT）",
+                                  fallback_client)
                 actions.append(result)
             else:
                 actions.append({"symbol": symbol, "action": "no_add",
@@ -237,7 +242,8 @@ def manage(client: Any, signals: list[dict[str, Any]] | None = None,
 
 # ---------- 紧急止损（guardian 每 tick 调用，秒级响应） ----------
 
-def emergency_stop_loss(client: Any, prices: dict[str, float] | None = None) -> dict[str, Any]:
+def emergency_stop_loss(client: Any, prices: dict[str, float] | None = None,
+                        fallback_client: Any = None) -> dict[str, Any]:
     """持仓浮亏超止损线 → 立即市价平仓（不等 15 分钟轮次）。
 
     返回是否执行了平仓。
@@ -254,7 +260,8 @@ def emergency_stop_loss(client: Any, prices: dict[str, float] | None = None) -> 
         levels = levels_for(symbol)
         if pnl_pct <= -levels["stop_loss_pct"]:
             executed.append(_execute(client, symbol, "SELL", qty,
-                                     f"紧急止损（30s 粒度浮亏 {pnl_pct:.2f}%，立即平仓）"))
+                                     f"紧急止损（30s 粒度浮亏 {pnl_pct:.2f}%，立即平仓）",
+                                     fallback_client))
     return {"executed": executed, "count": len(executed)}
 
 
@@ -301,8 +308,9 @@ def _dedup_ok(symbol: str, side: str) -> bool:
     return True
 
 
-def _execute(client: Any, symbol: str, side: str, qty: float, reason: str) -> dict[str, Any]:
-    """统一执行：风控闸门 → 防重 → 测试网下单 → 账本 → 审计。任何失败都不影响主循环。"""
+def _execute(client: Any, symbol: str, side: str, qty: float, reason: str,
+             fallback_client: Any = None) -> dict[str, Any]:
+    """统一执行：风控闸门 → 防重 → 测试网下单（主客户端失败自动切兜底）→ 账本 → 审计。"""
     # 熔断强制（SELL 放行、BUY 冻结）
     gate = _risk_gate(symbol, side)
     if not gate["ok"]:
@@ -312,8 +320,30 @@ def _execute(client: Any, symbol: str, side: str, qty: float, reason: str) -> di
     if not _dedup_ok(symbol, side):
         return {"symbol": symbol, "action": f"{side}_deduped", "reason": reason,
                 "error": "防重窗口内已执行", "ok": False}
+    order = None
+    order_err = ""
     try:
-        order = client.create_test_order(symbol, side, str(round(qty, 8)))
+        # 真实下单（create_order 走 /api/v3/order 实际成交；create_test_order 仅校验）
+        order = client.create_order(symbol=symbol, side=side,
+                                    quantity=f"{round(qty, 6):.6f}")
+    except Exception as exc:
+        order_err = str(exc)[:100]
+        # 主客户端故障 → 兜底（HL，符号去 USDT，OrderResult 格式适配）
+        if fallback_client is not None:
+            try:
+                res = fallback_client.create_order(
+                    symbol=symbol.replace("USDT", ""), side=side,
+                    quantity=round(qty, 6))
+                order = {"orderId": res.order_id, "status": res.status,
+                         "avgFillPrice": res.avg_fill_price,
+                         "price": res.price or 0, "transactTime": None}
+                order_err = ""
+            except Exception as exc2:
+                order_err = f"{order_err} → HL 兜底也失败: {str(exc2)[:80]}"
+    if order is None:
+        return {"symbol": symbol, "action": f"{side}_failed", "reason": reason,
+                "error": order_err[:160], "ok": False}
+    try:
         logged_at = now_iso()
         # 账本（主记录）
         entry = {
@@ -324,7 +354,7 @@ def _execute(client: Any, symbol: str, side: str, qty: float, reason: str) -> di
             or order.get("avg_fill_price"), "quantity": str(round(qty, 8)),
             "created_at": order.get("transactTime") or order.get("created_at"),
             "logged_at": logged_at,
-            "note": f"position_manager: {reason}",
+            "note": f"position_manager: {reason}" + ("" if not order_err else f"（兜底执行）"),
         }
         with ORDERS_PATH.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -352,7 +382,8 @@ MAX_POSITIONS = 3          # 最多同时持仓数（分散风险）
 
 def open_position(client: Any, symbol: str, signal: dict[str, Any],
                   price: float | None = None,
-                  events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                  events: list[dict[str, Any]] | None = None,
+                  fallback_client: Any = None) -> dict[str, Any]:
     """开仓引擎：信号 → 风控闸门 → 仓位计算 → 下单 → 账本审计。
 
     风控闸门（全部强制）：
@@ -400,7 +431,8 @@ def open_position(client: Any, symbol: str, signal: dict[str, Any],
                 "reason": f"开仓金额 {qty * px:.2f} < {MIN_TRADE_USDT} USDT（过小）", "ok": False}
     result = _execute(client, symbol, "BUY", qty,
                       f"开仓（{signal.get('strategy', '')} 强度{strength:.2f}，"
-                      f"风险预算 {risk_budget:.2f} USDT @ 止损 {stop_dist_pct}%）")
+                      f"风险预算 {risk_budget:.2f} USDT @ 止损 {stop_dist_pct}%）",
+                      fallback_client)
     if result.get("ok"):
         # 审计开仓决策（交易假设）
         with AUDIT_PATH.open("a", encoding="utf-8") as handle:

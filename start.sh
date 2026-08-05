@@ -5,6 +5,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# 加载交易所凭证（BINANCE_TESTNET_API_KEY 等；仅在用户环境存在时读取，绝不写入仓库）
+if [ -f ~/.zshrc ]; then
+  set +e
+  . ~/.zshrc
+  set -e
+fi
+
 PY="${PYTHON:-/opt/homebrew/bin/python3.14}"
 if [ ! -x "$PY" ]; then
   PY="$(command -v python3 || true)"
