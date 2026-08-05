@@ -54,11 +54,11 @@ const wts=(s.strategies||[]).filter(x=>x.weight<1).map(x=>x.label+'×'+x.weight)
 set('rk-losses',(s.risk?.consecutive_losses??0)+' 笔');set('rk-drawdown',Number(s.risk?.drawdown_pct??0).toFixed(2)+'%');set('rk-cash',cash.toFixed(2)+' USDT');
 set('rk-liquidity',s.liquidity_ok?'正常':'异常');set('rk-liquidity-trend',s.liquidity_ok?'量价健康':'量能或波动异常，交易前检查');
 const halt=s.risk?.trading_halted;const hb=document.getElementById('rk-halt-badge');if(hb){hb.textContent=halt?'熔断中':'正常';hb.className='badge'+(halt?' red':'')}const hd=document.getElementById('rk-halt-detail');if(hd){hd.innerHTML=halt?'<div class="notice"><div class="notice-icon red">!</div><div><b>熔断已触发</b><span>'+esc((s.risk?.halt_reasons||[]).join('；')||'硬边界触发')+'</span></div></div>':'<div class="muted">当前无熔断；连亏 5 笔 / 回撤 15% / 25% 自动触发。</div>'}
-set('rp-core',s.staff_active+'/17 岗位待命');set('rp-nav',nav.toFixed(2)+' USDT');set('rp-audit',s.audit_records+' 条');
+set('rp-core',s.staff_active+'/'+(s.employees? s.employees.length : 17)+' 岗位待命');set('rp-nav',nav.toFixed(2)+' USDT');set('rp-audit',s.audit_records+' 条');
 const ic=(s.events||[]).length;set('ic-count',ic+' 条');set('ic-mode','● '+(ic?'有 '+ic+' 条记录':'当前无已知异常'));
-const sc=document.getElementById('staff-count');if(sc)sc.textContent=s.staff_active+'/17 待命';
-const ac=document.getElementById('ag-count');if(ac)ac.textContent='17 岗位 · '+s.staff_active+' 待命';const agm=document.getElementById('ag-mode');if(agm)agm.textContent='● 全员待命 · 随时可指派';
+const sc=document.getElementById('staff-count');if(sc)sc.textContent=s.staff_active+'/'+(s.employees? s.employees.length : 17)+' 待命';
+const ac=document.getElementById('ag-count');if(ac)ac.textContent=(s.employees? s.employees.length : '?')+' 岗位 · '+s.staff_active+' 待命';const agm=document.getElementById('ag-mode');if(agm)agm.textContent='● 全员待命 · 随时可指派';
 renderDecisions('ov-decisions',s);renderDecisions('ps-decisions',s);renderEvents('ov-events',s);renderEvents('ic-list',s);renderStaff(s);renderAgents(s);renderStrategies(s);renderChart(s);renderOpportunities(s);
 }catch(e){document.querySelectorAll('.mode').forEach(m=>m.textContent='● 本地界面 / API未启动')}}
-show('overview');setInterval(refreshLive,5000);
+show('overview');setInterval(refreshLive,2000);
 </script></body></html>
