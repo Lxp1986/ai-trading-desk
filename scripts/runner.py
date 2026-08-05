@@ -303,6 +303,17 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
     except Exception as exc:
         log(f"⚠️ 学习引擎失败: {exc}")
 
+    # 主动调仓（持仓实时管理：止盈/信号翻转/同向加仓；止损由 guardian 30s 兜底）
+    try:
+        from autotrader.position_manager import manage
+        manage_report = manage(client, signals=None, prices=prices)
+        acted = [a for a in manage_report.get("actions", []) if a.get("ok")]
+        if acted:
+            summary = "; ".join("%s %s" % (a["symbol"], a["action"]) for a in acted[:3])
+            log(f"⚙️ 主动调仓: {len(acted)} 笔执行 ({summary})")
+    except Exception as exc:
+        log(f"⚠️ 主动调仓失败: {exc}")
+
     state = {
         "updated_at": now_cn(),
         "opportunities": opportunities,

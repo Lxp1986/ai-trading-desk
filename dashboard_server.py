@@ -156,6 +156,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception:
             opportunities = {"ranked": [], "opportunities": [], "scanned": 0, "updated_at": ""}
 
+        # 持仓实时监控（guardian 每 30s 写入 positions.json）
+        positions_monitor = {"count": 0, "positions": {}, "updated_at": ""}
+        try:
+            pos_path = ROOT / "artifacts" / "positions.json"
+            if pos_path.exists():
+                positions_monitor = json.loads(
+                    pos_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+
         return {
             "mode": "simulation",
             "network": "Binance Spot Testnet",
@@ -168,6 +178,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "realized_pnl": portfolio.get("realized_pnl", 0.0),
             "unrealized_pnl": portfolio.get("unrealized_pnl", 0.0),
             "max_drawdown_pct": portfolio.get("max_drawdown_pct", 0.0),
+            "positions_monitor": positions_monitor,
             "market": {
                 "symbol": market.get("symbol", "BTC/USDT"),
                 "price": market.get("price"),

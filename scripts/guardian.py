@@ -62,12 +62,20 @@ def raise_alert(level: str, summary: str) -> None:
         ensure_ascii=False), encoding="utf-8")
 
 
-def check_price() -> None:
-    """L0：1 分钟粒度多标的实时价格（突发暴涨/暴跌分秒必争）。
+_ORDER_CLIENT = None
 
-    18 标的价格快照写 live_prices.json（Dashboard 实时看板数据源）；
-    每个标的检测 1 分钟异常：BTC 阈值 1%，其他标的 1.5%（alt 波动大）。
-    """
+
+def _order_client():
+    """下单客户端（懒加载：Binance Spot Testnet，仅止损平仓/调仓使用）。"""
+    global _ORDER_CLIENT
+    if _ORDER_CLIENT is None:
+        from autotrader.binance_testnet import BinanceSpotTestnet
+        _ORDER_CLIENT = BinanceSpotTestnet()
+    return _ORDER_CLIENT
+
+
+def check_price() -> None:
+    """L0：实时价格快照（30 秒） + 异常检测 + 持仓实时监控/紧急止损。"""
     global _last_price
     try:
         from autotrader.live_prices import scan_live_prices
@@ -78,6 +86,26 @@ def check_price() -> None:
         return
     if not prices:
         return
+
+    # 持仓实时监控 + 紧急止损（30 秒粒度：止损绝不等 15 分钟轮次）
+    try:
+        from autotrader.position_manager import emergency_stop_loss, monitor_positions
+        price_map = {sym: float(row["price"]) for sym, row in prices.items()
+                     if row.get("price")}
+        mon = monitor_positions(price_map)
+        if mon.get("count", 0) > 0:
+            emg = emergency_stop_loss(_order_client(), price_map)
+            if emg.get("executed"):
+                for ex in emg["executed"]:
+                    write_event({
+                        "type": "stop_loss_executed",
+                        "level": "L3",
+                        "detail": f"⚠️ 紧急止损平仓 {ex['symbol']}: {ex['reason']}",
+                        "symbol": ex["symbol"], "at": now_cn(),
+                    })
+                    raise_alert("action", f"止损熔断执行: {ex['symbol']} {ex['reason']}")
+    except Exception as exc:
+        log(f"⚠️ 持仓监控失败: {exc}")
 
     for symbol, row in prices.items():
         try:
@@ -100,7 +128,7 @@ def check_price() -> None:
                 write_event(event)
                 log(f"⚠️ {event['detail']}")
                 if abs(change) >= 2.0:
-                    raise_alert("action", f"{symbol} 1分钟{direction} {change:+.2f}%！{event['detail']}")
+                    raise_alert("action", f"{symbol} 30秒{direction} {change:+.2f}%！{event['detail']}")
         _last_prices[symbol] = price
 
 
