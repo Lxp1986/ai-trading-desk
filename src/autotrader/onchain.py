@@ -153,6 +153,16 @@ def scan_btc_onchain() -> dict[str, Any]:
     except (urllib.error.URLError, OSError, ValueError) as exc:
         errors.append(f"unconfirmed: {type(exc).__name__}")
 
+    # 3) 无异常也写检查记录（保证 onchain.jsonl 永续存在，分析任务可读最新状态）
+    if signals_recorded == 0:
+        record_signal(
+            kind="check", symbol="BTC", direction="neutral",
+            evidence={"congestion_fee_sat_vb": congestion, "whale_txns": len(whale_txns)},
+            confidence=0.3,
+            detail="BTC 网络正常：无拥堵、无大额异动",
+        )
+        signals_recorded += 1
+
     return {
         "congestion_fee_sat_vb": congestion,
         "whale_txns": len(whale_txns),
