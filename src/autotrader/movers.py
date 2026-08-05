@@ -58,7 +58,15 @@ def scan_movers(client, top_n: int = 10, min_volume_usdt: float = 0.0) -> dict[s
     try:
         tickers = _fetch_ticker_24h(client)
     except Exception as exc:
-        return {"error": str(exc), "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        # 失败也落盘（保证 movers.json 永续存在，分析任务可读最新状态）
+        result: dict[str, Any] = {
+            "error": str(exc),
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "scanned": 0, "gainers": [], "losers": [], "hot_sectors": [], "cold_sectors": [],
+        }
+        MOVERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MOVERS_PATH.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+        return result
 
     rows: list[dict[str, Any]] = []
     for t in tickers:
