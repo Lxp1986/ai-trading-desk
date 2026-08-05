@@ -7,8 +7,8 @@
 ## 1. 项目定位（30 秒版）
 
 研究优先、模拟优先的交易控制平面。**当前阶段不接真实交易所、不保存 API
-密钥、不执行真实下单**——用 Binance Spot Testnet 虚拟资产连跑 30 天模拟盘，
-先把可审计的决策、风控、报告、回放链路跑通。
+密钥、不执行真实下单**——用 **OKX Demo Trading 模拟盘**（虚拟 USDT，主通道）
+连跑 30 天模拟盘，先把可审计的决策、风控、报告、回放链路跑通。
 
 权责链：董事会（启动/终止）→ CEO/Hermes（全部日常经营与交易决策）→
 风险官（硬边界可否决）→ 执行交易员/适配器（下单，不自创方向）。
@@ -16,13 +16,19 @@
 ## 2. 前置条件
 
 - macOS / Linux，Python **≥3.11**（本项目在 Homebrew python3.14 下开发验证）
-- Binance Spot Testnet API Key + Secret（虚拟资产，无真实资金）
+- **OKX Demo Trading API Key + Secret + Passphrase**（虚拟资金，无真实资金；OKX App/网页 → 模拟交易环境 → API 管理 → 创建 API Key，选「API 交易」、权限勾含交易）
+- （可选）Binance Spot Testnet API Key + Secret（兜底通道）
 - Hermes Agent 运行环境（cron、Telegram 网关按需）
 
 ## 3. 凭证设置（值绝不写入本文件/代码/Git）
 
 ```bash
-# 测试网凭证（在 https://testnet.binance.vision 用 GitHub 登录生成）
+# OKX Demo Trading 凭证（主通道；模拟/实盘由 x-simulated-trading 请求头区分，适配器写死模拟）
+export OKX_API_KEY='...'        # 36 位 UUID
+export OKX_API_SECRET='...'     # 32 位 hex
+export OKX_API_PASSPHRASE='...' # 创建时自设口令（OKX 界面不显示，忘记需重建 key）
+
+# （可选）Binance 测试网凭证（兜底，在 https://testnet.binance.vision 用 GitHub 登录生成）
 export BINANCE_TESTNET_API_KEY='...'
 export BINANCE_TESTNET_API_SECRET='...'
 ```
@@ -51,12 +57,16 @@ export LIVE_TRADING_ENABLED=1
 配置对应交易所凭证 → 用 `BinanceAdapter(mode="live")` / `HyperliquidAdapter(mode="live")`。
 未授权时任何实盘模式初始化都会抛错拒绝。
 
-## 3.1 交易所适配器
+## 3.1 交易所适配器与执行兜底链
 
 统一接口 `ExchangeAdapter`（src/autotrader/exchange.py）：行情/账户/下单/撤单/订单状态。
-- **BinanceAdapter**：测试网（默认）/实盘双模式，HMAC-SHA256 签名，纯标准库
-- **HyperliquidAdapter**：测试网（默认）/实盘双模式，ed25519 agent key 签名，
-  需 `pip install cryptography`（可选依赖，行情查询不依赖；交易/签名需要）
+- **OkxDemoAdapter**（主通道）：OKX Demo Trading，HMAC-SHA256 base64 签名，市价买单按金额（tgtCcy=quote_ccy），纯标准库
+- **BinanceAdapter / BinanceSpotTestnet**：测试网（默认）/实盘双模式，第一兜底
+- **HyperliquidAdapter**：第二兜底（测试网需官方界面激活，EIP-712 签名见 hl_crypto.py）
+
+**执行兜底链**：OKX Demo（主）→ Binance 测试网 → Hyperliquid 测试网（逐级切换，订单经风控后执行）。
+
+**仓位与总资金匹配**：资金基准 = OKX 账户总权益（~$80k 虚拟）；单笔风险预算 = 总权益 × 1%；单笔名义上限 = min(总权益 × 20%, 可用 USDT × 30%)；最多 3 持仓。ETH 双向交易已授权（需买可买、缺 USDT 可卖已有 ETH）。
 
 新增交易所 = 实现一个 ExchangeAdapter 子类，风控/账本/决策层无需改动。
 
@@ -103,8 +113,10 @@ src/autotrader/
 ├── event_trader.py      事件交易员：五阶段流程
 ├── llm.py               Hermes 集成：register_thesis / record_usage / 确定性降级
 ├── exchange.py          交易所适配器统一接口 + 实盘授权开关
-├── binance.py            Binance 双模式适配器（测试网/实盘）
-├── hyperliquid.py        Hyperliquid 适配器（测试网/实盘，ed25519）
+├── okx.py               OKX Demo Trading 适配器（主通道：行情/执行/账户）
+├── binance.py            Binance 双模式适配器（测试网/实盘，兜底）
+├── hyperliquid.py        Hyperliquid 适配器（测试网/实盘，第二兜底）
+├── hl_crypto.py         纯 stdlib HL 官方签名（msgpack+EIP-712+secp256k1）
 ├── binance_testnet.py   Binance Spot Testnet 适配器（向后兼容）
 ├── team.py              Agent 员工组织（17 岗位完整档案）
 └── models.py            数据模型
@@ -160,9 +172,10 @@ python3 scripts/agent_dispatch.py --all-deterministic       # 全部确定性岗
 ## 9. 常见问题
 
 - **测试失败 `No module named 'autotrader'`**：需要 `PYTHONPATH=src` 或 pytest（pyproject 已配 pythonpath）
-- **账户/订单接口报 missing key**：环境变量未加载，先 `source ~/.hermes/scripts/load_binance_env.sh` 或重新 export
+- **账户/订单接口报 missing key**：环境变量未加载，先 `source ~/.zshrc`（OKX_API_KEY/SECRET/PASSPHRASE）或重新 export
+- **OKX 下单报 51020 最小金额不足**：市价买单须按金额（适配器已自动 tgtCcy=quote_ccy），且单笔名义受可用 USDT × 30% 约束
 - **Dashboard 打不开**：确认进程存活且只监听 127.0.0.1（`lsof -i :8765`）
-- **测试网余额每月重置**：本地账本 `orders.jsonl` 为主记录，不受影响
+- **模拟盘账户重置**：OKX App 模拟交易界面可一键重置账户（清空持仓/恢复初始虚拟资金）；重置后需清空本地账本 `orders.jsonl` 并重启 runner（events.jsonl 会记录 account_reset 事件）
 
 ## 健康检查
 

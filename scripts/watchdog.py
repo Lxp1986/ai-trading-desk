@@ -28,8 +28,12 @@ ALERT_PENDING = ROOT / "artifacts" / "alert_pending.json"
 ALERT_PROCESSED = ROOT / "artifacts" / "alert_processed.json"
 
 ALERT_THRESHOLD_REJECTED = 5      # 连续否决数
-ALERT_THRESHOLD_TOKENS = 100_000  # 单日 token 突增阈值
+TOKEN_DELTA_ALERT = 200_000       # 突增检测：30 分钟窗口内新增 tokens 阈值（≈日化 96M，正常 ~42k/30min 的 5 倍）
+CALL_DELTA_ALERT = 60             # 突增检测：30 分钟窗口内新增调用次数阈值（规划 165 次/天 ≈ 3.4 次/30min 的 17 倍）
 EVENT_WINDOW_MINUTES = 35         # 事件检查窗口（覆盖两轮 runner + 巡检间隔）
+
+# 看门狗状态（记录上次检查基线，避免累计超阈值后每 30 分钟重复轰炸）
+WATCHDOG_STATE = ROOT / "artifacts" / "watchdog_state.json"
 
 # CEO 即时处理任务（看门狗告警时唤醒：hermes cron run 触发其立即处理）
 # 克隆者环境：设置环境变量 CEO_PROCESSING_JOB=<自己的任务job_id>（见 ONBOARDING.md）
@@ -108,16 +112,33 @@ def main() -> None:
                 "建议复核当前市场状态与假设质量。"
             )
 
-    # 4. Token 用量异常
+    # 4. Token 用量异常（突增检测：30 分钟窗口内新增超阈值才告警，防重复轰炸）
     if TOKEN_USAGE.exists():
         try:
             usage = json.loads(TOKEN_USAGE.read_text(encoding="utf-8"))
             calls = int(usage.get("api_calls", 0))
             total = int(usage.get("total_tokens", 0))
-            if calls > 0 and total > ALERT_THRESHOLD_TOKENS:
+            # 读上次检查基线（首次运行以当前值为基线 → 静默）
+            state = {}
+            if WATCHDOG_STATE.exists():
+                try:
+                    state = json.loads(WATCHDOG_STATE.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    state = {}
+            last_total = int(state.get("last_total", total))
+            last_calls = int(state.get("last_calls", calls))
+            delta_total = total - last_total
+            delta_calls = calls - last_calls
+            # 无论是否告警都更新基线（增量口径：只反映本次窗口内的消耗）
+            WATCHDOG_STATE.write_text(
+                json.dumps({"last_total": total, "last_calls": calls}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            if delta_total > TOKEN_DELTA_ALERT or delta_calls > CALL_DELTA_ALERT:
                 alerts.append(
-                    f"⚠️ **Token 成本预警**：本项目累计 {total} tokens / {calls} 次调用，"
-                    "超过预警阈值，建议检查调用频率与模型选择。"
+                    f"⚠️ **Token 成本预警**：30 分钟窗口新增 {delta_total} tokens / "
+                    f"{delta_calls} 次调用（累计 {total} / {calls}），"
+                    "远超正常消耗速率，疑似调用异常。"
                 )
         except (OSError, ValueError):
             alerts.append("⚠️ **Token 用量文件损坏**：`artifacts/token_usage.json` 无法解析。")

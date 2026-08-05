@@ -2,7 +2,7 @@
 
 > 一个**可打包交付、可无差别接管**的 AI 交易运营系统：Hermes 任 CEO 全权经营，
 > 20 名 Agent 员工平时主动履职、随时可指派；数据驱动的策略自适应调整；
-> 硬风控程序强制。当前阶段运行于 **Binance Spot Testnet 模拟盘**（30 天验证期）。
+> 硬风控程序强制。当前阶段运行于 **OKX Demo Trading 模拟盘**（30 天验证期）。
 
 ---
 
@@ -62,8 +62,10 @@
 │  ├─ event_trader.py   五阶段事件交易框架                                             │
 │  ├─ team.py           20 岗位完整档案（职责/输入/输出/权限/考核/失败处理）            │
 │  ├─ exchange.py       交易所统一适配器接口 + LIVE_TRADING_ENABLED 实盘授权开关        │
-│  ├─ binance.py        Binance 适配器（testnet 默认 / live 需授权）                    │
-│  ├─ hyperliquid.py    Hyperliquid 适配器（ed25519 agent key 签名，双模式）            │
+│  ├─ okx.py            OKX Demo Trading 适配器（**主通道**：行情/执行/账户，x-simulated) │
+│  ├─ binance.py        Binance 适配器（testnet 兜底 / live 需授权）                    │
+│  ├─ hyperliquid.py    Hyperliquid 适配器（第二兜底，测试网需激活）                    │
+│  ├─ hl_crypto.py      纯 stdlib HL 官方签名（msgpack+EIP-712+secp256k1）              │
 │  ├─ keccak.py         纯 Python Keccak-256（Hyperliquid 签名用）                      │
 │  └─ llm.py            Hermes 集成层（register_thesis / record_usage）                 │
 │                                                                                      │
@@ -74,7 +76,7 @@
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**数据流**：9 数据源（Binance/mempool/blockchain.info/CoinDesk/CoinTelegraph/alternative.me/CoinGecko/Deribit/DefiLlama）→ 确定性层 → 落盘 → 模型分析层研判 → 决策 → risk.py 风控 → 账本/审计 → 报告/Dashboard/Telegram。
+**数据流**：行情主源 OKX（批量 ticker 一次全市场）+ 9 数据源（Binance/mempool/blockchain.info/CoinDesk/CoinTelegraph/alternative.me/CoinGecko/Deribit/DefiLlama）→ 确定性层 → 落盘 → 模型分析层研判 → 决策 → risk.py 风控 → 账本/审计 → 报告/Dashboard/Telegram。
 
 ## 4. 快速上手（新 Hermes 接管，约 15 分钟）
 
@@ -83,17 +85,19 @@
 git clone git@github.com:<owner>/ai-trading-desk.git
 cd ai-trading-desk
 
-# 2) 配置测试网凭证（值绝不进代码/Git）
-#    在 https://testnet.binance.vision 用 GitHub 登录生成
-export BINANCE_TESTNET_API_KEY='...'
-export BINANCE_TESTNET_API_SECRET='...'
-#    建议追加到 ~/.zshrc 本机持久化
+# 2) 配置 OKX Demo Trading 凭证（值绝不进代码/Git）
+#    OKX App/网页 → 模拟交易环境 → API 管理 → 创建 API Key（选「API 交易」，权限勾含交易）
+export OKX_API_KEY='...'        # 36 位 UUID
+export OKX_API_SECRET='...'     # 32 位 hex
+export OKX_API_PASSPHRASE='...' # 创建时自设口令
+#    建议追加到 ~/.zshrc 本机持久化（模拟/实盘由 x-simulated-trading 请求头区分，适配器写死模拟）
+#    （可选）Binance 测试网凭证：https://testnet.binance.vision 用 GitHub 登录生成
 
 # 3) 一键启动（幂等）
 ./start.sh                # guardian（分层调度）+ runner（15分钟）+ Dashboard（127.0.0.1:8765）
 
 # 4) 验证
-PYTHONPATH=src python3 -m unittest discover -s tests -v   # 92/92 全绿
+PYTHONPATH=src python3 -m unittest discover -s tests -v   # 129/129 全绿
 PYTHONPATH=src python3 scripts/health_check.py             # 退出码 0 = 健康
 curl -s http://127.0.0.1:8765/api/status | head -c 400    # Dashboard API
 
@@ -110,7 +114,7 @@ curl -s http://127.0.0.1:8765/api/status | head -c 400    # Dashboard API
 |------|--------------|---------|
 | CEO / 总交易代理 | 持续分析每 10 分钟 + 决策 9/12/15/22 点，重大事件立即处理 | cron / 手动 |
 | 风险官 / 风控引擎 | 每轮检查连亏/回撤/熔断 | runner 自动 |
-| 执行交易员 / 交易所适配器 | 订单经风控后执行（Binance/Hyperliquid） | runner/决策触发 |
+| 执行交易员 / 交易所适配器 | 订单经风控后执行（OKX Demo 主通道 + Binance/HL 兜底） | runner/决策触发 |
 | 审计员 / 本地账本 | 审计与账本持续写入 | runner 自动 |
 | 数据工程师 / 数据质量官 | K线采集落盘 + 宏观数据源采集 | runner/guardian |
 | 技术分析员 | RSI/ATR/EMA/量比计算 | runner 自动 |
@@ -144,6 +148,9 @@ curl -s http://127.0.0.1:8765/api/status | head -c 400    # Dashboard API
 
 ## 7. 运行形态（30 天模拟盘 · 分层调度）
 
+- **执行主通道：OKX Demo Trading**（虚拟 USDT，模拟/实盘靠 `x-simulated-trading` 请求头区分，适配器写死模拟，绝不触达实盘）；兜底链 = Binance 测试网 → Hyperliquid 测试网；
+- **仓位与总资金匹配**：资金基准 = OKX 账户总权益（~$80k 虚拟）；单笔风险预算 = 总权益 × 1%；单笔名义上限 = min(总权益 × 20%, 可用 USDT × 30%)；最多 3 持仓（总敞口 ≤60%）；ETH 双向交易已授权（需买可买、缺 USDT 可卖已有 ETH）；
+
 - **确定性数据层（零 Token，跑满 24h）**：价格异常 **1 分钟**（guardian.py）· 新闻 RSS **5 分钟** · 链上/鱼群扫描 **15 分钟** · 情绪/宏观（恐惧贪婪/DVOL/稳定币/全球市值）**60 分钟** · 常规行情/指标/风控/账本/机会扫描（40 标的）**15 分钟**（runner.py）；
 - **模型分析层（deepseek-v4-flash，3 元/天预算打满）**：持续分析循环 **每 10 分钟**（机会榜+新闻+链上+宏观共振研判+短时预测）· 决策简报 4 次/天 · 市场预测 3 次/天 · 每日前瞻/盘后复盘/历史绩效/策略研发/衍生品资金面/异动研究/新闻解读/多周期全景；
 - **每日 09:00**：经营报告（净值/持仓/盈亏/风控/Token，区分已验证/推断/拟建设）；
@@ -154,11 +161,11 @@ curl -s http://127.0.0.1:8765/api/status | head -c 400    # Dashboard API
 ## 8. 测试
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v   # 92/92 全绿
+PYTHONPATH=src python3 -m unittest discover -s tests -v   # 129/129 全绿
 PYTHONPATH=src python3 scripts/health_check.py             # 系统健康检查（退出码 0 = 健康）
 ```
 
-覆盖：引擎决策、市场分类器、组合账本、硬风控、Keccak 向量、Hyperliquid 签名、策略库、自适应权重、员工调度、机会扫描器、新闻/链上管线、鱼群探测器、宏观数据源。
+覆盖：引擎决策、市场分类器、组合账本、硬风控、OKX 适配器（base64 签名/市价金额模式）、Keccak 向量、Hyperliquid EIP-712 签名、策略库、自适应权重、员工调度、机会扫描器、新闻/链上管线、鱼群探测器、宏观数据源。
 
 ## 9. 目录与数据文件
 
@@ -197,9 +204,9 @@ artifacts/          运行时产物（本地主记录，不提交 Git）
 ## 11. 接管检查单（其他 Hermes）
 
 - [ ] 读 [AGENTS.md](AGENTS.md)（本项目行为准则）与 [ONBOARDING.md](ONBOARDING.md)
-- [ ] `git clone` 后 `PYTHONPATH=src python3 -m unittest discover -s tests` 全绿（92/92）
+- [ ] `git clone` 后 `PYTHONPATH=src python3 -m unittest discover -s tests` 全绿（129/129）
 - [ ] `PYTHONPATH=src python3 scripts/health_check.py` 退出码 0（进程/数据文件全健康）
-- [ ] 配置 Binance 测试网凭证（环境变量，不入库）
+- [ ] 配置 OKX Demo Trading 凭证（OKX_API_KEY/SECRET/PASSPHRASE，环境变量，不入库；Binance 测试网可选）
 - [ ] `./start.sh` 启动，`curl http://127.0.0.1:8765/api/status` 有数据
 - [ ] 按 ONBOARDING.md 重建全部 cron（持续分析/决策×4/预测×3/前瞻/复盘/绩效/策略研发/衍生品/异动/新闻解读/多周期/报告/看门狗/周复盘）
 - [ ] 确认仅监听 127.0.0.1，无公网端口
