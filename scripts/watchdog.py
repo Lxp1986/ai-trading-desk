@@ -23,9 +23,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT = ROOT / "artifacts" / "audit.jsonl"
 TOKEN_USAGE = ROOT / "artifacts" / "token_usage.json"
+EVENTS = ROOT / "artifacts" / "events.jsonl"
 
 ALERT_THRESHOLD_REJECTED = 5      # 连续否决数
 ALERT_THRESHOLD_TOKENS = 100_000  # 单日 token 突增阈值
+EVENT_WINDOW_MINUTES = 35         # 事件检查窗口（覆盖两轮 runner + 巡检间隔）
 
 
 def now_cn() -> str:
@@ -90,6 +92,30 @@ def main() -> None:
                 )
         except (OSError, ValueError):
             alerts.append("⚠️ **Token 用量文件损坏**：`artifacts/token_usage.json` 无法解析。")
+
+    # 5. 新异常事件（runner 检测到但尚未告警的行情/风控事件）
+    if EVENTS.exists():
+        try:
+            import time as _time
+            now_ts = _time.time()
+            for line in EVENTS.read_text(encoding="utf-8").splitlines()[-20:]:
+                if not line.strip():
+                    continue
+                ev = json.loads(line)
+                at = ev.get("at", "")
+                # 事件时间解析（"2026-08-05 18:40" 格式）
+                try:
+                    ev_ts = datetime.strptime(at, "%Y-%m-%d %H:%M").timestamp()
+                except (ValueError, TypeError):
+                    continue
+                if now_ts - ev_ts > EVENT_WINDOW_MINUTES * 60:
+                    continue  # 旧事件不重复告警
+                if ev.get("level") in ("L2", "L3", "L4"):
+                    alerts.append(
+                        f"⚠️ **行情异常事件**（{ev.get('type')}）：{ev.get('detail', '')}"
+                    )
+        except (OSError, json.JSONDecodeError):
+            pass
 
     if alerts:
         print(f"🚨 **AI自主交易事业部 · 异常告警**（{now_cn()}）")
