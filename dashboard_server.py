@@ -140,6 +140,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         staff_active = sum(1 for e in snapshot() if e["status"] == "active")
 
+        # 多标的主动机会榜（策略研究员）
+        try:
+            from autotrader.opportunities import load_opportunities
+            opportunities = load_opportunities()
+        except Exception:
+            opportunities = {"ranked": [], "opportunities": [], "scanned": 0, "updated_at": ""}
+
         return {
             "mode": "simulation",
             "network": "Binance Spot Testnet",
@@ -177,6 +184,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "staff_active": staff_active,
             "liquidity_ok": market.get("liquidity_ok"),
             "token_usage": token_usage,
+            "opportunities": opportunities,
         }
 
     def _json(self, payload):

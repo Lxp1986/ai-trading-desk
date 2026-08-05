@@ -222,8 +222,21 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict) -> dict:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
         log(f"⚠️ 事件: {event['type']} | {event['detail']}")
 
+    # 多标的主动机会扫描（策略研究员 · 机会扫描；失败不影响主循环）
+    opportunities = {}
+    try:
+        from autotrader.opportunities import save_opportunities, scan_opportunities
+        opportunities = scan_opportunities(client)
+        save_opportunities(opportunities)
+        if opportunities.get("opportunities"):
+            log(f"🎯 机会扫描: {len(opportunities['opportunities'])} 个机会 "
+                f"({', '.join(o['symbol'] for o in opportunities['opportunities'][:3])})")
+    except Exception as exc:
+        log(f"⚠️ 机会扫描失败: {exc}")
+
     state = {
         "updated_at": now_cn(),
+        "opportunities": opportunities,
         "snapshot": {
             "symbol": snapshot.symbol, "price": snapshot.price,
             "volume_ratio": snapshot.volume_ratio, "trend": snapshot.trend,

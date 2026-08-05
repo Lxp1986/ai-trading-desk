@@ -28,3 +28,4 @@ __all__ = [
     "EMPLOYEES",
     "register_thesis", "record_usage", "deterministic_fallback",
 ]
+from .opportunities import Opportunity, scan_opportunities, load_opportunities
