@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 AUDIT = ROOT / "artifacts" / "audit.jsonl"
 TOKEN_USAGE = ROOT / "artifacts" / "token_usage.json"
 EVENTS = ROOT / "artifacts" / "events.jsonl"
+ALERT_PENDING = ROOT / "artifacts" / "alert_pending.json"
+ALERT_PROCESSED = ROOT / "artifacts" / "alert_processed.json"
 
 ALERT_THRESHOLD_REJECTED = 5      # 连续否决数
 ALERT_THRESHOLD_TOKENS = 100_000  # 单日 token 突增阈值
@@ -114,6 +116,30 @@ def main() -> None:
                     alerts.append(
                         f"⚠️ **行情异常事件**（{ev.get('type')}）：{ev.get('detail', '')}"
                     )
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # 6. 持续分析循环的行动级机会/异常标记（CEO 高频分析产出）
+    if ALERT_PENDING.exists():
+        try:
+            alert = json.loads(ALERT_PENDING.read_text(encoding="utf-8"))
+            processed = {}
+            if ALERT_PROCESSED.exists():
+                try:
+                    processed = json.loads(ALERT_PROCESSED.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    processed = {}
+            generated = alert.get("generated_at", "")
+            if generated and processed.get("generated_at") != generated:
+                level = alert.get("level", "info")
+                summary = alert.get("summary", "")
+                if level in ("action", "critical"):
+                    alerts.append(
+                        f"🎯 **CEO行动级信号**（{level}）：{summary}"
+                    )
+                ALERT_PROCESSED.write_text(
+                    json.dumps({"generated_at": generated}, ensure_ascii=False), encoding="utf-8"
+                )
         except (OSError, json.JSONDecodeError):
             pass
 
