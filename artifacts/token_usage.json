@@ -1,0 +1,10 @@
+{
+  "project": "AI自主交易事业部",
+  "currency": "tokens",
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "total_tokens": 0,
+  "api_calls": 0,
+  "updated_at": null,
+  "note": "仅统计本项目通过本地记录器登记的模型调用；不读取Hermes全局或其他项目消耗。"
+}
