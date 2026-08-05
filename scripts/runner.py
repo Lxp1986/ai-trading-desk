@@ -242,10 +242,25 @@ def run_agents_work(indicators: dict, prev_state: dict,
     return agents
 
 
-def run_once(client: BinanceSpotTestnet, prev_state: dict) -> dict:
-    """执行一轮采集+计算，返回本轮状态。"""
+def run_once(client: BinanceSpotTestnet, prev_state: dict,
+             fallback_client=None) -> dict:
+    """执行一轮采集+计算，返回本轮状态。
+
+    fallback_client：主客户端（Binance 测试网）故障时自动切换
+    （Hyperliquid 测试网兜底，K 线格式已归一化兼容）。保证 502 频发时
+    行情/机会扫描/员工履职不整轮停摆。
+    """
     symbol = "BTCUSDT"
-    snapshot = build_snapshot(client, symbol, "15m", 60)
+    snapshot_source = "binance_testnet"
+    try:
+        snapshot = build_snapshot(client, symbol, "15m", 60)
+    except Exception:
+        if fallback_client is None:
+            raise
+        log("⚠️ 主客户端（Binance 测试网）故障，切换 Hyperliquid 兜底")
+        symbol = "BTC"  # HL 符号无 USDT 后缀
+        snapshot = build_snapshot(fallback_client, symbol, "15m", 60)
+        snapshot_source = "hyperliquid_testnet"
     indicators = compute_indicators(load_klines(symbol, "15m", 60))
     prices = {snapshot.symbol: snapshot.price}
     orders = load_orders()
@@ -265,7 +280,13 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict) -> dict:
     opportunities = {}
     try:
         from autotrader.opportunities import save_opportunities, scan_opportunities
-        opportunities = scan_opportunities(client)
+        try:
+            opportunities = scan_opportunities(client)
+        except Exception:
+            if fallback_client is None:
+                raise
+            log("⚠️ 机会扫描主客户端失败，切换 Hyperliquid 兜底")
+            opportunities = scan_opportunities(fallback_client)
         save_opportunities(opportunities)
         if opportunities.get("opportunities"):
             log(f"🎯 机会扫描: {len(opportunities['opportunities'])} 个机会 "
@@ -279,7 +300,7 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict) -> dict:
         "snapshot": {
             "symbol": snapshot.symbol, "price": snapshot.price,
             "volume_ratio": snapshot.volume_ratio, "trend": snapshot.trend,
-            "liquidity_ok": snapshot.liquidity_ok, "source": snapshot.source,
+            "liquidity_ok": snapshot.liquidity_ok, "source": snapshot_source,
         },
         "indicators": {k: round(v, 4) for k, v in indicators.items()},
         "risk": {
@@ -309,6 +330,14 @@ def main() -> None:
     args = parser.parse_args()
 
     client = BinanceSpotTestnet()
+    # 兜底客户端：Binance 测试网 502 时自动切换（Hyperliquid 测试网）
+    try:
+        from autotrader.hyperliquid import HyperliquidAdapter
+        fallback_client = HyperliquidAdapter(mode="testnet")
+        log("✅ Hyperliquid 兜底客户端就绪（Binance 502 时自动切换）")
+    except Exception as exc:
+        fallback_client = None
+        log(f"⚠️ Hyperliquid 兜底客户端不可用: {exc}")
     prev_state: dict = {}
     if STATE_PATH.exists():
         try:
@@ -326,7 +355,7 @@ def main() -> None:
     log(f"运行循环启动: 间隔 {args.interval} 分钟 | 测试网执行 + 本地账本主记录")
     while True:
         try:
-            prev_state = run_once(client, prev_state)
+            prev_state = run_once(client, prev_state, fallback_client)
         except Exception as exc:  # 单轮失败不阻塞循环
             log(f"本轮失败（继续下一轮）: {exc}")
         if args.once:

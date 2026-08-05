@@ -54,6 +54,7 @@ def store_klines(
     db_path: Path = DB_PATH,
 ) -> int:
     """Persist klines; returns number of rows written."""
+    klines = normalize_klines(klines)
     init_db(db_path)
     rows = [
         (
@@ -129,7 +130,34 @@ def atr(klines: list[dict[str, Any]], period: int = 14) -> float:
     return sum(window) / len(window)
 
 
+def normalize_klines(klines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """K 线字段归一化：兼容 Binance（open_time/open/high/low/close/volume/quote_volume/trades）
+    与 Hyperliquid（t/o/h/l/c/v/n/q）两种交易所返回格式。
+
+    统一输出：open_time/open/high/low/close/volume/quote_volume/trades。
+    """
+    if not klines:
+        return klines
+    first = klines[0]
+    if "close" in first:
+        return klines  # 已是标准格式
+    norm = []
+    for k in klines:
+        norm.append({
+            "open_time": k.get("t", k.get("open_time", 0)),
+            "open": k.get("o", k.get("open", 0)),
+            "high": k.get("h", k.get("high", 0)),
+            "low": k.get("l", k.get("low", 0)),
+            "close": k.get("c", k.get("close", 0)),
+            "volume": k.get("v", k.get("volume", 0)),
+            "quote_volume": k.get("q", k.get("quote_volume", 0)),
+            "trades": k.get("n", k.get("trades", 0)),
+        })
+    return norm
+
+
 def compute_indicators(klines: list[dict[str, Any]]) -> dict[str, float]:
+    klines = normalize_klines(klines)
     closes = [float(k["close"]) for k in klines]
     volumes = [float(k["volume"]) for k in klines]
     price = closes[-1] if closes else 0.0
@@ -145,7 +173,8 @@ def compute_indicators(klines: list[dict[str, Any]]) -> dict[str, float]:
         "rsi14": rsi(closes),
         "atr14": atr(klines),
         "volume_ratio": (volumes[-1] / avg_volume) if avg_volume else 1.0,
-        "change_24h_pct": ((closes[-1] / closes[0]) - 1) * 100 if len(closes) > 1 else 0.0,
+        # 24 周期变化（最近 24 根 K 线；1h 周期即 24h，4h 周期即 96h——语义为"近24周期"）
+        "change_24h_pct": ((closes[-1] / closes[-24]) - 1) * 100 if len(closes) > 24 else 0.0,
         "high_24h": max(float(k["high"]) for k in klines) if klines else 0.0,
         "low_24h": min(float(k["low"]) for k in klines) if klines else 0.0,
     }
