@@ -1,0 +1,101 @@
+# AI自主交易事业部 · 交接运行手册（ONBOARDING）
+
+> 本文件是**任何新 Hermes 实例接管本项目**的第一入口。先读本文件，再读
+> 知识库 `02-项目/AI自主交易事业项目研讨纪要.md`（治理规则全文）。
+> 交接方（董事会）只负责：提供本机、提供凭证、启动/终止项目。日常经营归 CEO（接管方 Hermes）。
+
+## 1. 项目定位（30 秒版）
+
+研究优先、模拟优先的交易控制平面。**当前阶段不接真实交易所、不保存 API
+密钥、不执行真实下单**——用 Binance Spot Testnet 虚拟资产连跑 30 天模拟盘，
+先把可审计的决策、风控、报告、回放链路跑通。
+
+权责链：董事会（启动/终止）→ CEO/Hermes（全部日常经营与交易决策）→
+风险官（硬边界可否决）→ 执行交易员/适配器（下单，不自创方向）。
+
+## 2. 前置条件
+
+- macOS / Linux，Python **≥3.11**（本项目在 Homebrew python3.14 下开发验证）
+- Binance Spot Testnet API Key + Secret（虚拟资产，无真实资金）
+- Hermes Agent 运行环境（cron、Telegram 网关按需）
+
+## 3. 凭证设置（值绝不写入本文件/代码/Git）
+
+```bash
+# 测试网凭证（在 https://testnet.binance.vision 用 GitHub 登录生成）
+export BINANCE_TESTNET_API_KEY='...'
+export BINANCE_TESTNET_API_SECRET='...'
+```
+
+持久化建议：追加到 `~/.zshrc`（本机专用）。Hermes 的 cron 任务通过
+`~/.hermes/scripts/load_binance_env.sh` 加载，无需在 prompt 中暴露值。
+
+## 4. 一键启动
+
+```bash
+./start.sh          # 启动 runner（每15分钟一轮）+ Dashboard（127.0.0.1:8765）
+```
+
+验证：
+- `curl -s http://127.0.0.1:8765/api/status` → JSON 含 nav/positions/market/risk
+- `tail artifacts/runner.log` → 每轮"轮次完成"记录
+
+## 5. 接管后必做（CEO 上岗流程）
+
+1. 读知识库研讨纪要（治理/硬风控/报告制度），确认 CEO 职责边界；
+2. 运行测试确认环境健康：`PYTHONPATH=src python3 -m unittest discover -s tests -v`（应全绿）；
+3. 重建 Hermes 实例级 cron（4 个任务）：
+   - 每日 09:00 经营报告 → Telegram（读 `scripts/trading_report.py` 输出）
+   - 每 30 分钟异常看门狗（`~/.hermes/scripts/trading_watchdog.py`，静默模式，no_agent）
+   - 每日 10:00/22:00 Hermes 交易假设介入（读 `artifacts/state.json` → 草拟 → 风控 → 虚拟下单 → 简报）
+4. 确认 Dashboard 只监听 127.0.0.1（无公网端口、无端口转发）；
+5. 第一个月：每日查看经营报告，异常时（熔断/连续否决/Token 突增）立即上报董事会。
+
+## 6. 目录与数据文件
+
+```text
+src/autotrader/
+├── market.py            市场状态分类器 + 历史K线落盘（market.db, SQLite）
+├── portfolio.py         本地账本：持仓/现金/盈亏/净值/最大回撤
+├── risk.py              风控：订单级 + 硬边界（连亏5暂停/回撤15%停/25%全平/单笔风险1%）
+├── engine.py            决策引擎（假设→风控→模拟执行→审计）
+├── llm.py               Hermes 集成：register_thesis / record_usage / 确定性降级
+├── binance_testnet.py   Binance Spot Testnet 适配器（只连测试网）
+├── team.py              Agent 员工组织（静态花名册）
+└── models.py            数据模型
+scripts/
+├── runner.py            30 天运行循环（常驻）
+├── trading_report.py    经营报告（Markdown）
+└── watchdog.py          异常看门狗（静默告警）
+artifacts/
+├── audit.jsonl          决策审计（可回放）
+├── orders.jsonl         测试网订单账本（本地主记录）
+├── token_usage.json     Token 用量（仅本项目）
+├── state.json           最新市场/组合/风控状态（runner 每轮写入）
+├── market.db            历史 K 线（SQLite）
+├── events.jsonl         事件记录
+└── runner.log           运行日志
+```
+
+## 7. 硬风控参数（不可因 CEO 自信突破）
+
+- 连亏 **5 笔** → 暂停新仓（只允许减仓/平仓）
+- 回撤 **15%** → 停止自动开仓；**25%** → 全平模式
+- 单笔风险预算：|现价 − 止损| × 数量 ≤ 现金 × **1%**
+- 熔断时 SELL/HOLD 放行、BUY 冻结
+
+## 8. 重要边界（违反即失职）
+
+- 绝不连接正式网（适配器只允许 `testnet.binance.vision`）；
+- 不保存/打印/提交任何 API Key、Secret、私钥；
+- 董事长买卖观点只作研究输入，不自动转订单；
+- 模型输出必须过独立风控；Hermes 不直接下单绕过风控；
+- 模拟盘结果不得描述为实盘收益；未过验证门槛不申请真实交易权限；
+- 不上云、不开放公网端口、不做端口转发。
+
+## 9. 常见问题
+
+- **测试失败 `No module named 'autotrader'`**：需要 `PYTHONPATH=src` 或 pytest（pyproject 已配 pythonpath）
+- **账户/订单接口报 missing key**：环境变量未加载，先 `source ~/.hermes/scripts/load_binance_env.sh` 或重新 export
+- **Dashboard 打不开**：确认进程存活且只监听 127.0.0.1（`lsof -i :8765`）
+- **测试网余额每月重置**：本地账本 `orders.jsonl` 为主记录，不受影响
