@@ -8,11 +8,59 @@ ROOT = Path(__file__).resolve().parent
 AUDIT = ROOT / "artifacts" / "audit.jsonl"
 TOKEN_USAGE = ROOT / "artifacts" / "token_usage.json"
 STATE = ROOT / "artifacts" / "state.json"
+SIGNALS = ROOT / "artifacts" / "signals.jsonl"
+WEIGHTS = ROOT / "artifacts" / "strategy_weights.json"
 STARTING_CAPITAL_USDT = 277.0
 
 import sys
 sys.path.insert(0, str(ROOT / "src"))
 from autotrader.team import counts, research_team, snapshot
+
+# 策略清单（真实运行状态由权重文件 + 信号记录决定）
+STRATEGY_META = [
+    ("trend_breakout", "趋势突破", "顺势 + 量能确认"),
+    ("pullback_rebound", "回撤反弹", "趋势中回踩均线 + RSI 修复"),
+    ("range_reversion", "震荡高抛低吸", "震荡市 RSI 边界反转"),
+    ("defensive", "防守", "波动异常 → 观望降频"),
+    ("event_driven", "事件驱动", "A级事件 + 明确预期差"),
+]
+
+
+def _strategies_status() -> list[dict]:
+    """策略真实状态：权重（启用/降权/停用）+ 最近触发时间。"""
+    weights: dict = {}
+    if WEIGHTS.exists():
+        try:
+            weights = json.loads(WEIGHTS.read_text(encoding="utf-8")).get("weights", {})
+        except (OSError, ValueError):
+            weights = {}
+    last_trigger: dict[str, str] = {}
+    if SIGNALS.exists():
+        try:
+            lines = SIGNALS.read_text(encoding="utf-8").strip().splitlines()[-50:]
+            for line in lines:
+                if not line:
+                    continue
+                record = json.loads(line)
+                for signal in record.get("signals", []):
+                    last_trigger.setdefault(signal.get("strategy"), record.get("time", ""))
+        except (OSError, ValueError):
+            pass
+    result = []
+    for key, label, desc in STRATEGY_META:
+        weight = weights.get(key, 1.0)
+        if weight <= 0:
+            status, badge = "已停用", "gray"
+        elif weight < 1.0:
+            status, badge = f"降权({weight})", "amber"
+        else:
+            status, badge = "启用", ""
+        result.append({
+            "key": key, "label": label, "description": desc,
+            "status": status, "badge": badge, "weight": weight,
+            "last_trigger": last_trigger.get(key, ""),
+        })
+    return result
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -62,6 +110,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         risk = state.get("risk", {}) or {}
         agents = state.get("agents", {}) or {}
 
+        # 策略真实状态（权重 + 最近触发）
+        strategies = _strategies_status()
+
         return {
             "mode": "simulation",
             "network": "Binance Spot Testnet",
@@ -93,6 +144,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "research_team": research_team(),
             "employee_counts": counts(),
             "agents_work": agents,
+            "strategies": strategies,
             "token_usage": token_usage,
         }
 

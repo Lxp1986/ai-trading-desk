@@ -133,15 +133,20 @@ def run_agents_work(indicators: dict, prev_state: dict,
     agents["CEO / 总交易代理"] = {"last_run": now, "status": "ok",
                                  "output": "每日 10/22 点研究+决策介入（cron），重大事件立即处理"}
 
-    # —— 策略研究员：主动出信号并落盘 ——
+    # —— 策略研究员：主动出信号（应用自适应权重）并落盘 ——
     try:
-        signals = [s.to_dict() for s in apply_strategies(indicators, events)]
+        from autotrader.strategy_tracker import apply_weights, update_weights
+        weights = update_weights()  # 按绩效更新权重（连亏降权/停用）
+        signals = [s.to_dict() for s in apply_weights(apply_strategies(indicators, events), weights)]
         with SIGNALS_PATH.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"time": now, "signals": signals}, ensure_ascii=False) + "\n")
         summary = f"{len(signals)} 个信号"
         if signals:
             top = signals[0]
             summary += f" | 最强: {top['strategy']} {top['action']} @ {top['strength']}"
+        disabled = [k for k, v in weights.items() if v <= 0]
+        if disabled:
+            summary += f" | 已停用: {','.join(disabled)}"
         agents["策略研究员"] = {"last_run": now, "status": "ok", "output": summary}
     except Exception as exc:
         agents["策略研究员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
