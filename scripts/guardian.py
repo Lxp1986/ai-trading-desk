@@ -35,6 +35,7 @@ NEWS_EVERY = 5            # 5 分钟
 ONCHAIN_EVERY = 15        # 15 分钟
 MOVERS_EVERY = 15         # 15 分钟（鱼群扫描）
 SENTIMENT_EVERY = 60      # 60 分钟
+MACRO_EVERY = 60           # 60 分钟（宏观数据）
 
 _last_price: float | None = None
 
@@ -117,6 +118,23 @@ def scan_onchain_every_15m() -> None:
         log(f"⚠️ 链上检测失败: {exc}")
 
 
+def scan_macro_every_60m() -> None:
+    """L2：宏观数据采集（恐惧贪婪/全球市值/DVOL/稳定币，60 分钟粒度）。"""
+    try:
+        from autotrader.macro_data import scan_macro
+        m = scan_macro()
+        parts = []
+        if m.get("fng"):
+            parts.append(f"恐惧贪婪 {m['fng']['value']}({m['fng']['label']})")
+        if m.get("dvol_btc"):
+            parts.append(f"BTC DVOL {m['dvol_btc']['dvol']}")
+        if m.get("stablecoins"):
+            parts.append(f"稳定币 ${m['stablecoins']['pegged_usd_total']/1e9:.0f}B")
+        log("🌐 宏观: " + (" | ".join(parts) if parts else "数据源不可用"))
+    except Exception as exc:
+        log(f"⚠️ 宏观采集失败: {exc}")
+
+
 def scan_movers_every_15m() -> None:
     """L1：全市场鱼群扫描（异动标的 + 热点板块，15 分钟粒度）。"""
     try:
@@ -163,6 +181,8 @@ def main() -> None:
                 scan_movers_every_15m()
             if tick % SENTIMENT_EVERY == 0:
                 update_sentiment_every_60m()
+            if tick % MACRO_EVERY == 0:
+                scan_macro_every_60m()
             tick += 1
             time.sleep(TICK)
         except KeyboardInterrupt:
