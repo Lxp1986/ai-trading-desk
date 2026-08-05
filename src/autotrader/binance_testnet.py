@@ -48,6 +48,19 @@ class BinanceSpotTestnet:
     def ticker_price(self, symbol: str) -> dict[str, Any]:
         return self._request("GET", "/api/v3/ticker/price", {"symbol": symbol})
 
+    def klines(self, symbol: str, interval: str = "15m", limit: int = 24) -> list[dict[str, Any]]:
+        """Public candlestick data (open, high, low, close, volume...)."""
+        payload = self._request("GET", "/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit})
+        if not isinstance(payload, list):
+            raise BinanceTestnetError("unexpected klines response format")
+        keys = ("open_time", "open", "high", "low", "close", "volume", "close_time",
+                "quote_volume", "trades", "taker_base", "taker_quote", "ignore")
+        result: list[dict[str, Any]] = []
+        for row in payload:
+            if isinstance(row, list):
+                result.append(dict(zip(keys, row)))
+        return result
+
     def account(self) -> dict[str, Any]:
         return self._request("GET", "/api/v3/account", {}, signed=True)
 
@@ -77,7 +90,7 @@ class BinanceSpotTestnet:
             params["timeInForce"] = "GTC"
         return self._request("POST", path, params, signed=True)
 
-    def _request(self, method: str, path: str, params: dict[str, Any], signed: bool = False) -> dict[str, Any]:
+    def _request(self, method: str, path: str, params: dict[str, Any], signed: bool = False) -> Any:
         query = {key: value for key, value in params.items() if value is not None}
         headers: dict[str, str] = {}
         if signed:
@@ -105,6 +118,6 @@ class BinanceSpotTestnet:
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             raise BinanceTestnetError(f"Binance Spot Testnet request failed: {exc}") from exc
-        if not isinstance(payload, dict):
+        if not isinstance(payload, (dict, list)):
             raise BinanceTestnetError("unexpected Binance response format")
         return payload

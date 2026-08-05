@@ -1,60 +1,45 @@
-"""LLM research layer for the trading control plane.
+"""Hermes 模型集成层（研究层）。
 
-Hermes-routed model integration per the project charter:
+设计原则（2026-08-05 董事长确认）：本项目**不额外搭建模型 API 服务、
+不配置 LLM API Key**。Hermes 本身就是模型执行者——交易假设草拟、
+新闻归纳、证据冲突分析、持仓复核、报告文字化均由 Hermes 实际操作，
+把结果写入项目，而不是由项目代码自己去调用某个模型 API。
 
-- Model output is a RESEARCH INPUT. It can draft a trade thesis, but the
-  thesis must still pass the independent risk review before it becomes a
-  decision, and it never places an order.
-- Credentials come only from environment variables, never from code or
-  audit logs.
-- When the API is unavailable, out of budget, or the response cannot be
-  parsed, the module degrades to a deterministic fallback instead of
-  failing the pipeline (observation mode).
+本模块职责：
 
-Environment variables (all optional):
-
-- ``LLM_API_KEY`` (falls back to ``DEEPSEEK_API_KEY``)
-- ``LLM_BASE_URL``  (default ``https://api.deepseek.com/v1``)
-- ``LLM_MODEL``     (default ``deepseek-chat``)
-
-Token usage is recorded into ``artifacts/token_usage.json`` (project-only
-scope; never reads Hermes-global usage).
+1. ``register_thesis()``：接收 Hermes 草拟的交易假设（结构化 dict），
+   校验后生成 ``TradeIntent``（source="hermes"）。生成的意图仍必须
+   经过独立风控审核，Hermes 草拟不等于下单。
+2. ``record_usage()``：Hermes 每次为本项目完成模型型任务后，登记
+   Token 用量到 ``artifacts/token_usage.json``（仅统计本项目，不读取
+   Hermes 全局用量，不混入其他项目）。
+3. ``deterministic_fallback()``：Hermes 不可用/预算不足时的确定性
+   观察模式降级策略，保证安全监控与模拟链路不中断。
 """
 
 from __future__ import annotations
 
 import json
-import os
-import urllib.request
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .models import MarketSnapshot, Side, TradeIntent
 
-DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
-DEFAULT_MODEL = "deepseek-chat"
-REQUEST_TIMEOUT_SECONDS = 30.0
-
 _USAGE_PATH = Path(__file__).resolve().parents[2] / "artifacts" / "token_usage.json"
-
-
-class LLMUnavailableError(RuntimeError):
-    """Raised when the model API cannot be used (no key, network, budget)."""
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _env_key() -> str:
-    key = os.environ.get("LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
-    return (key or "").strip()
-
-
 def record_usage(provider: str, model: str, input_tokens: int, output_tokens: int) -> dict[str, Any]:
-    """Atomically accumulate project token usage into artifacts/token_usage.json."""
+    """Accumulate project token usage into artifacts/token_usage.json.
+
+    Called by Hermes after it performs a model-type task for this project
+    (thesis drafting, news summarisation, review, report writing). The
+    provider/model reflect whatever Hermes is currently routed to.
+    """
     usage: dict[str, Any] = {
         "project": "AI自主交易事业部",
         "currency": "tokens",
@@ -90,61 +75,8 @@ def record_usage(provider: str, model: str, input_tokens: int, output_tokens: in
     return usage
 
 
-def chat_json(
-    messages: list[dict[str, str]],
-    *,
-    temperature: float = 0.2,
-    max_tokens: int = 800,
-) -> dict[str, Any]:
-    """Call an OpenAI-compatible chat completions endpoint and return parsed JSON.
-
-    Raises LLMUnavailableError when the model cannot be reached or the
-    response is not valid JSON.
-    """
-    api_key = _env_key()
-    if not api_key:
-        raise LLMUnavailableError("LLM_API_KEY / DEEPSEEK_API_KEY not set; degraded to deterministic mode")
-    base_url = (os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-    model = os.environ.get("LLM_MODEL") or DEFAULT_MODEL
-
-    body = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-    }
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise LLMUnavailableError(f"model call failed: {exc}") from exc
-
-    usage = payload.get("usage") or {}
-    record_usage(provider="deepseek" if "deepseek" in base_url else "llm", model=model,
-                 input_tokens=int(usage.get("prompt_tokens", 0) or 0),
-                 output_tokens=int(usage.get("completion_tokens", 0) or 0))
-
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMUnavailableError(f"unexpected model response shape: {exc}") from exc
-    if not isinstance(content, str) or not content.strip():
-        raise LLMUnavailableError("empty model response")
-    try:
-        return json.loads(content)
-    except ValueError as exc:
-        raise LLMUnavailableError(f"model response is not valid JSON: {exc}") from exc
-
-
 def deterministic_fallback(snapshot: MarketSnapshot) -> TradeIntent:
-    """Deterministic observation-mode thesis when the model is unavailable."""
+    """Deterministic observation-mode thesis when Hermes is unavailable."""
     if snapshot.trend == "trend_up" and snapshot.volume_ratio >= 1.5 and snapshot.liquidity_ok:
         quantity = round(50.0 / snapshot.price, 8)  # ~50 USDT small probe position
         return TradeIntent(
@@ -169,80 +101,41 @@ def deterministic_fallback(snapshot: MarketSnapshot) -> TradeIntent:
     )
 
 
-def draft_thesis(
-    snapshot: MarketSnapshot,
-    market_state: str,
-    news_brief: str = "",
-    *,
-    use_llm: bool = True,
-) -> tuple[TradeIntent, dict[str, Any]]:
-    """Draft a trade thesis from the market snapshot.
+def register_thesis(snapshot: MarketSnapshot, thesis: dict[str, Any]) -> TradeIntent:
+    """Validate and register a thesis drafted by Hermes.
 
-    Returns ``(intent, meta)`` where ``meta`` carries ``degraded``,
-    ``provider`` and ``model`` so the caller can audit how the thesis was
-    produced. The returned intent has source ``llm_draft`` or
-    ``deterministic_fallback`` and still must pass risk review.
+    ``thesis`` keys: ``side`` (buy/sell/hold), ``thesis``, ``invalidation``,
+    ``stop_price`` (number or null), ``confidence`` (0..1).
+
+    The result carries ``source="hermes"`` and still must pass the
+    independent risk review before it becomes a decision.
     """
-    if not use_llm:
-        intent = deterministic_fallback(snapshot)
-        return intent, {"degraded": True, "provider": None, "model": None, "reason": "llm disabled"}
-
-    prompt = (
-        "你是AI交易事业部的研究员。基于给定市场快照、市场状态与新闻简报，"
-        "草拟一个交易假设。只输出JSON，不要其他文字。JSON结构：\n"
-        "{\n"
-        '  "side": "buy" 或 "sell" 或 "hold",\n'
-        '  "thesis": "为什么价格可能继续走（含证据与预期差）",\n'
-        '  "invalidation": "什么证据会推翻这个判断",\n'
-        '  "stop_price": 数字或 null,\n'
-        '  "confidence": 0到1之间的小数\n'
-        "}\n"
-        "约束：不编造消息；证据不足时 side 为 hold；"
-        "置信度反映证据强度而非意愿。"
-    )
-    user_content = (
-        f"市场快照: {json.dumps(asdict(snapshot), ensure_ascii=False, default=str)}\n"
-        f"市场状态: {market_state}\n"
-        f"新闻简报: {news_brief or '（无）'}\n"
-        f"风险边界: 单笔模拟订单上限由独立风控审核，草拟时按保守小仓估算。"
-    )
-    try:
-        result = chat_json(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.2,
-            max_tokens=800,
-        )
-    except LLMUnavailableError as exc:
-        intent = deterministic_fallback(snapshot)
-        return intent, {"degraded": True, "provider": None, "model": None, "reason": str(exc)}
-
-    side_raw = str(result.get("side", "hold")).lower()
+    side_raw = str(thesis.get("side", "hold")).lower()
     side = Side.HOLD if side_raw not in {"buy", "sell"} else Side(side_raw)
-    confidence = float(result.get("confidence", 0.5))
+    try:
+        confidence = float(thesis.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
     confidence = max(0.0, min(1.0, confidence))
-    stop_price = result.get("stop_price")
-    stop_price = round(float(stop_price), 2) if isinstance(stop_price, (int, float)) else None
+    stop_price = thesis.get("stop_price")
+    try:
+        stop_price = round(float(stop_price), 2) if stop_price is not None else None
+    except (TypeError, ValueError):
+        stop_price = None
+
     quantity = 0.0
     if side is not Side.HOLD:
-        # Conservative probe sizing: model proposes direction, local sizing
+        # Conservative probe sizing: Hermes proposes direction, local sizing
         # keeps the order small and within risk limits.
         quantity = round(50.0 / snapshot.price, 8)
 
-    intent = TradeIntent(
+    return TradeIntent(
         symbol=snapshot.symbol,
         side=side,
         quantity=quantity,
-        thesis=str(result.get("thesis", "")).strip() or "LLM草拟假设（无摘要）",
-        invalidation=str(result.get("invalidation", "")).strip() or "无",
+        thesis=str(thesis.get("thesis", "")).strip() or "Hermes草拟假设（无摘要）",
+        invalidation=str(thesis.get("invalidation", "")).strip() or "无",
         stop_price=stop_price,
         confidence=confidence,
-        source="llm_draft",
+        source="hermes",
     )
-    return intent, {
-        "degraded": False,
-        "provider": "deepseek" if "deepseek" in (os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL) else "llm",
-        "model": os.environ.get("LLM_MODEL") or DEFAULT_MODEL,
-    }
