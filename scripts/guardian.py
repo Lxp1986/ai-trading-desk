@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""AI自主交易事业部 · 高频守护进程（分层调度器）。
+
+按信息时效性分层运行（董事长要求：不能千篇一律，关键信息分秒必争）：
+
+- L0 实时守护：价格异常检测（每 1 分钟，Binance ticker 免费接口）
+- L1 高频情报：新闻抓取（每 5 分钟，RSS 免费）
+- L1 常规：链上检测（每 15 分钟，mempool/blockchain.info 免费）
+- L2 情绪：情绪状态更新（每 60 分钟，资金费率 8h 结算无需高频）
+
+全部确定性计算，零 Token。异常 → events.jsonl + alert_pending.json（看门狗转发告警）。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+EVENTS_PATH = ROOT / "artifacts" / "events.jsonl"
+ALERT_PENDING = ROOT / "artifacts" / "alert_pending.json"
+
+# ---- L0 价格异常阈值（1 分钟粒度）----
+PRICE_SPIKE_PCT = 1.0     # 1 分钟波动 ≥1% → 事件（暴跌/暴涨）
+PRICE_SYMBOL = "BTCUSDT"
+
+# ---- 分层频率（秒）----
+TICK = 60
+NEWS_EVERY = 5            # 5 分钟
+ONCHAIN_EVERY = 15        # 15 分钟
+SENTIMENT_EVERY = 60      # 60 分钟
+
+_last_price: float | None = None
+
+
+def now_cn() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def log(msg: str) -> None:
+    print(f"[{now_cn()}] {msg}", flush=True)
+
+
+def write_event(event: dict) -> None:
+    with EVENTS_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def raise_alert(level: str, summary: str) -> None:
+    """写行动级告警标记（看门狗巡检时转发 Telegram）。"""
+    ALERT_PENDING.write_text(json.dumps(
+        {"generated_at": now_cn(), "level": level, "summary": summary},
+        ensure_ascii=False), encoding="utf-8")
+
+
+def check_price() -> None:
+    """L0：1 分钟粒度价格异常检测（突发暴涨/暴跌分秒必争）。"""
+    global _last_price
+    try:
+        from autotrader.binance import BinanceAdapter
+        client = BinanceAdapter(mode="testnet")
+        ticker = client.ticker_price(PRICE_SYMBOL)
+        price = float(ticker["price"])
+    except Exception as exc:
+        log(f"⚠️ 价格获取失败: {exc}")
+        return
+
+    if _last_price is not None:
+        change = (price - _last_price) / _last_price * 100
+        if abs(change) >= PRICE_SPIKE_PCT:
+            direction = "暴涨" if change > 0 else "暴跌"
+            event = {
+                "type": "price_spike",
+                "level": "L2" if abs(change) < 3 else "L3",
+                "detail": f"1分钟内 {direction} {change:+.2f}% ({_last_price:.0f} → {price:.0f})",
+                "symbol": PRICE_SYMBOL,
+                "at": now_cn(),
+            }
+            write_event(event)
+            log(f"⚠️ {event['detail']}")
+            if abs(change) >= 2.0:
+                raise_alert("action", f"{PRICE_SYMBOL} 1分钟{direction} {change:+.2f}%！{event['detail']}")
+    _last_price = price
+
+
+def scan_news_every_5m() -> None:
+    """L1：新闻抓取（5 分钟粒度，重大新闻不漏）。"""
+    try:
+        from autotrader.news_research import scan_news
+        news = scan_news()
+        if news["recorded"]:
+            log(f"📰 新闻: 抓 {news['fetched']} 条 | 新增 {news['recorded']} 事件 (A{news['a_grade']}/B{news['b_grade']})")
+            if news["a_grade"]:
+                raise_alert("action", f"新增 {news['a_grade']} 条 A级新闻事件，CEO 应关注")
+    except Exception as exc:
+        log(f"⚠️ 新闻抓取失败: {exc}")
+
+
+def scan_onchain_every_15m() -> None:
+    """L1：链上检测（15 分钟粒度）。"""
+    try:
+        from autotrader.onchain import scan_btc_onchain
+        chain = scan_btc_onchain()
+        parts = []
+        if chain.get("congestion_fee_sat_vb"):
+            parts.append(f"拥堵 {chain['congestion_fee_sat_vb']} sats/vB")
+        if chain.get("whale_txns"):
+            parts.append(f"巨鲸异动 {chain['whale_txns']} 笔")
+        log(f"⛓ 链上: {' | '.join(parts) if parts else '网络正常'} | 新信号 {chain['signals_recorded']}")
+    except Exception as exc:
+        log(f"⚠️ 链上检测失败: {exc}")
+
+
+def update_sentiment_every_60m() -> None:
+    """L2：情绪状态（60 分钟粒度，资金费率 8h 结算）。"""
+    try:
+        from autotrader.sentiment import assess_sentiment, fetch_funding_rate, save_sentiment
+        funding = fetch_funding_rate()
+        state = assess_sentiment(funding=funding)
+        save_sentiment(state)
+        log(f"🧭 情绪: {state.state} (score {state.score})")
+    except Exception as exc:
+        log(f"⚠️ 情绪更新失败: {exc}")
+
+
+def main() -> None:
+    log(f"高频守护进程启动（分层调度: 价格1m / 新闻5m / 链上15m / 情绪60m）")
+    tick = 0
+    while True:
+        try:
+            check_price()  # L0 每 tick（1 分钟）
+            if tick % NEWS_EVERY == 0:
+                scan_news_every_5m()
+            if tick % ONCHAIN_EVERY == 0:
+                scan_onchain_every_15m()
+            if tick % SENTIMENT_EVERY == 0:
+                update_sentiment_every_60m()
+            tick += 1
+            time.sleep(TICK)
+        except KeyboardInterrupt:
+            log("守护进程停止")
+            break
+        except Exception as exc:
+            log(f"⚠️ 守护循环异常: {exc}（继续运行）")
+            time.sleep(TICK)
+
+
+if __name__ == "__main__":
+    main()

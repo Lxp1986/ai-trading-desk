@@ -13,7 +13,18 @@ echo "使用 Python: $PY"
 
 stop_all() {
   pkill -f "scripts/runner.py" 2>/dev/null && echo "runner 已停止" || echo "runner 未在运行"
+  pkill -f "scripts/guardian.py" 2>/dev/null && echo "guardian 已停止" || echo "guardian 未在运行"
   pkill -f "dashboard_server.py" 2>/dev/null && echo "dashboard 已停止" || echo "dashboard 未在运行"
+}
+
+start_guardian() {
+  if pgrep -f "scripts/guardian.py" > /dev/null 2>&1; then
+    echo "✅ guardian 已在运行"
+  else
+    mkdir -p artifacts
+    nohup "$PY" scripts/guardian.py >> artifacts/guardian.log 2>&1 &
+    echo "✅ guardian 已启动（PID $!，分层调度：价格1m/新闻5m/链上15m/情绪60m，日志 artifacts/guardian.log）"
+  fi
 }
 
 start_runner() {
@@ -40,6 +51,7 @@ case "${1:-start}" in
   stop) stop_all ;;
   start)
     start_runner
+    start_guardian
     start_dashboard
     echo ""
     echo "验证: curl -s http://127.0.0.1:8765/api/status | head -c 300"

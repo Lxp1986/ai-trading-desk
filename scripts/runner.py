@@ -185,32 +185,25 @@ def run_agents_work(indicators: dict, prev_state: dict,
     except Exception as exc:
         agents["事件交易员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
 
-    # —— 宏观与新闻研究员：每轮确定性抓取 RSS → 关键词分级 → 事件落盘 ——
+    # —— 宏观与新闻研究员：由 guardian 按 5 分钟粒度抓取更新，这里汇总最新状态 ——
     try:
-        from autotrader.news_research import scan_news
-        news = scan_news()
-        agents["宏观与新闻研究员"] = {
-            "last_run": now, "status": "ok",
-            "output": f"抓取 {news['fetched']} 条新闻 | 新增 {news['recorded']} 条事件 "
-                      f"(A级 {news['a_grade']} / B级 {news['b_grade']})"
-                      + (f" | 源错误 {len(news['errors'])}" if news["errors"] else ""),
-        }
+        from autotrader.news_research import load_events as _load_ev
+        recent_news = [e for e in _load_ev(50) if e.get("source", "").startswith("rss")]
+        a_grade = sum(1 for e in recent_news if e["grade"] == "A")
+        b_grade = sum(1 for e in recent_news if e["grade"] == "B")
+        agents["宏观与新闻研究员"] = {"last_run": now, "status": "ok",
+            "output": f"事件库 {len(recent_news)} 条新闻事件 (A级 {a_grade} / B级 {b_grade})，5分钟粒度抓取"}
     except Exception as exc:
         agents["宏观与新闻研究员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
 
-    # —— 链上数据分析员：每轮确定性抓取 BTC 网络 → 拥堵/巨鲸异动检测 ——
+    # —— 链上数据分析员：由 guardian 15 分钟粒度更新，这里读最新信号 ——
     try:
-        from autotrader.onchain import load_signals, scan_btc_onchain
-        chain = scan_btc_onchain()
-        parts = []
-        if chain.get("congestion_fee_sat_vb"):
-            parts.append(f"拥堵 {chain['congestion_fee_sat_vb']} sats/vB")
-        if chain.get("whale_txns"):
-            parts.append(f"巨鲸异动 {chain['whale_txns']} 笔")
-        if not parts:
-            parts.append("网络正常")
+        from autotrader.onchain import load_signals
+        signals = load_signals(limit=10)
+        latest = signals[-1] if signals else None
+        detail = latest.get("detail", "") if latest else "暂无信号"
         agents["链上数据分析员"] = {"last_run": now, "status": "ok",
-                                   "output": f"BTC 链上: {' | '.join(parts)} | 新增信号 {chain['signals_recorded']}"}
+            "output": f"链上信号库 {len(signals)} 条 | 最新: {detail}"}
         agents["聪明钱包研究员"] = agents["链上数据分析员"]
     except Exception as exc:
         agents["链上数据分析员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
