@@ -32,7 +32,10 @@ ALERT_THRESHOLD_TOKENS = 100_000  # 单日 token 突增阈值
 EVENT_WINDOW_MINUTES = 35         # 事件检查窗口（覆盖两轮 runner + 巡检间隔）
 
 # CEO 即时处理任务（看门狗告警时唤醒：hermes cron run 触发其立即处理）
-CEO_PROCESSING_JOB = "d64ac330cde3"
+# 克隆者环境：设置环境变量 CEO_PROCESSING_JOB=<自己的任务job_id>（见 ONBOARDING.md）
+import os as _os
+
+CEO_PROCESSING_JOB = _os.environ.get("CEO_PROCESSING_JOB", "d64ac330cde3")
 
 
 def wake_ceo() -> None:
@@ -44,7 +47,7 @@ def wake_ceo() -> None:
     import shutil
 
     hermes = shutil.which("hermes")
-    if not hermes:
+    if not hermes or not CEO_PROCESSING_JOB:
         return
     try:
         subprocess.Popen(
