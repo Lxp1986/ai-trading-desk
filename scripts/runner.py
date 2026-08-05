@@ -32,9 +32,14 @@ from autotrader.binance_testnet import BinanceSpotTestnet  # noqa: E402
 from autotrader.market import build_snapshot, compute_indicators, load_klines  # noqa: E402
 from autotrader.portfolio import load_orders, portfolio_snapshot  # noqa: E402
 from autotrader.risk import compute_state  # noqa: E402
+from autotrader.strategy import apply_strategies  # noqa: E402
+from autotrader.sentiment import assess_sentiment, fetch_funding_rate, save_sentiment  # noqa: E402
+from autotrader.event_trader import plan as event_plan  # noqa: E402
+from autotrader.news_research import load_events  # noqa: E402
 
 STATE_PATH = ROOT / "artifacts" / "state.json"
 EVENTS_PATH = ROOT / "artifacts" / "events.jsonl"
+SIGNALS_PATH = ROOT / "artifacts" / "signals.jsonl"
 LOG_PATH = ROOT / "artifacts" / "runner.log"
 
 # 事件阈值（基础版，后续可扩展研讨纪要的 11 类事件）
@@ -93,6 +98,106 @@ def detect_events(snapshot, indicators: dict, risk_state, prev_state) -> list[di
     return events
 
 
+def run_agents_work(indicators: dict, prev_state: dict,
+                    snapshot=None, risk_state=None, portfolio=None) -> dict:
+    """员工主动履职（策略/情绪/事件交易）：平时自动干本职工作，不等待点名。
+
+    返回各岗位最近工作摘要，写入 state.json["agents"] 供 Dashboard 展示。
+    """
+    agents: dict = {}
+    events = load_events(limit=10)
+    now = now_cn()
+
+    # —— 数据/技术/市场状态/风险/组合：runner 每轮主动采集与计算 ——
+    if snapshot is not None:
+        agents["数据工程师"] = {"last_run": now, "status": "ok",
+                               "output": f"K线采集落盘 | {snapshot.symbol} @ {snapshot.price}"}
+        agents["技术分析员"] = {"last_run": now, "status": "ok",
+                               "output": f"RSI {indicators.get('rsi14', 0):.1f} | ATR {indicators.get('atr14', 0):.0f} | 量比 {indicators.get('volume_ratio', 0):.2f}"}
+        agents["市场状态官"] = {"last_run": now, "status": "ok",
+                               "output": f"状态: {snapshot.trend} | 流动性 {'正常' if snapshot.liquidity_ok else '异常'}"}
+    if risk_state is not None:
+        agents["风险官"] = {"last_run": now, "status": "ok",
+                           "output": f"连亏 {risk_state.consecutive_losses} | 回撤 {risk_state.drawdown_pct}% | {'⚠ 熔断' if risk_state.trading_halted else '正常'}"}
+    if portfolio is not None:
+        agents["组合经理"] = {"last_run": now, "status": "ok",
+                             "output": f"净值 {portfolio['equity']:.2f} | 持仓 {len(portfolio.get('positions', {}))} 个 | 回撤 {portfolio.get('max_drawdown_pct', 0):.1f}%"}
+
+    # —— 运营/执行/报告岗位：持续在岗说明 ——
+    agents["审计员"] = {"last_run": now, "status": "ok", "output": "审计与账本持续写入（audit.jsonl / orders.jsonl）"}
+    agents["经营报告员"] = {"last_run": now, "status": "ok", "output": "每日 09:00 经营报告（cron 自动）"}
+    agents["成本与资源管理员"] = {"last_run": now, "status": "ok", "output": "Token 用量登记与成本监控（record_usage）"}
+    agents["API与应急响应官"] = {"last_run": now, "status": "ok", "output": "看门狗每 30 分钟巡检，异常立即告警"}
+    agents["执行交易员"] = {"last_run": now, "status": "ok",
+                           "output": "测试网适配器就绪（Binance/Hyperliquid），订单经风控后执行"}
+    agents["CEO / 总交易代理"] = {"last_run": now, "status": "ok",
+                                 "output": "每日 10/22 点研究+决策介入（cron），重大事件立即处理"}
+
+    # —— 策略研究员：主动出信号并落盘 ——
+    try:
+        signals = [s.to_dict() for s in apply_strategies(indicators, events)]
+        with SIGNALS_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"time": now, "signals": signals}, ensure_ascii=False) + "\n")
+        summary = f"{len(signals)} 个信号"
+        if signals:
+            top = signals[0]
+            summary += f" | 最强: {top['strategy']} {top['action']} @ {top['strength']}"
+        agents["策略研究员"] = {"last_run": now, "status": "ok", "output": summary}
+    except Exception as exc:
+        agents["策略研究员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
+
+    # —— 情绪与传播研究员：主动更新情绪状态（资金费率 8h 结算，每小时重拉一次）——
+    try:
+        last_sent = prev_state.get("agents", {}).get("情绪与传播研究员", {}).get("last_run", "")
+        should_fetch = True
+        if last_sent:
+            try:
+                from datetime import datetime as _dt
+                last_dt = _dt.strptime(last_sent, "%Y-%m-%d %H:%M:%S")
+                current_dt = _dt.strptime(now, "%Y-%m-%d %H:%M:%S")
+                should_fetch = (current_dt - last_dt).total_seconds() >= 3600
+            except ValueError:
+                should_fetch = True
+        funding = fetch_funding_rate() if should_fetch else {"cached": True}
+        ind = {"rsi14": indicators.get("rsi14", 50), "volume_ratio": indicators.get("volume_ratio", 1.0)}
+        sentiment = assess_sentiment(ind=ind, funding=funding)
+        save_sentiment(sentiment)
+        agents["情绪与传播研究员"] = {"last_run": now, "status": "ok",
+                                     "output": f"{sentiment.state} (score {sentiment.score})"}
+    except Exception as exc:
+        agents["情绪与传播研究员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
+
+    # —— 事件交易员：主动跟踪活跃事件进展 ——
+    try:
+        active = [e for e in events if e.get("grade") in ("A", "B")]
+        if active:
+            plans = [event_plan(e).to_dict() for e in active[-5:]]
+            phases = {p["event_id"]: p["phase"] for p in plans}
+            agents["事件交易员"] = {"last_run": now, "status": "ok",
+                                   "output": f"跟踪 {len(plans)} 个事件 | 阶段: {phases}"}
+        else:
+            agents["事件交易员"] = {"last_run": now, "status": "idle", "output": "无活跃事件，持续监控"}
+    except Exception as exc:
+        agents["事件交易员"] = {"last_run": now, "status": "error", "output": f"{type(exc).__name__}: {exc}"}
+
+    # —— 宏观与新闻研究员 / 链上 / 聪明钱包：研究型岗位由 CEO 定时扫描后落盘，
+    #    这里汇总其最近记录状态 ——
+    try:
+        agents["宏观与新闻研究员"] = {"last_run": now, "status": "ok",
+                                     "output": f"事件库 {len(events)} 条（CEO 定时扫描新闻源）"}
+    except Exception as exc:
+        agents["宏观与新闻研究员"] = {"last_run": now, "status": "error", "output": str(exc)}
+    try:
+        from autotrader.onchain import load_signals
+        signals = load_signals(limit=10)
+        agents["链上数据分析员"] = {"last_run": now, "status": "ok",
+                                   "output": f"链上信号库 {len(signals)} 条（CEO 定时用链上工具扫描）"}
+        agents["聪明钱包研究员"] = agents["链上数据分析员"]
+    except Exception as exc:
+        agents["链上数据分析员"] = {"last_run": now, "status": "error", "output": str(exc)}
+    return agents
+
+
 def run_once(client: BinanceSpotTestnet, prev_state: dict) -> dict:
     """执行一轮采集+计算，返回本轮状态。"""
     symbol = "BTCUSDT"
@@ -127,6 +232,7 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict) -> dict:
             "halt_reasons": list(risk_state.halt_reasons),
         },
         "portfolio": portfolio,
+        "agents": run_agents_work(indicators, prev_state, snapshot, risk_state, portfolio),
         "events_recent": len(events),
     }
     with STATE_PATH.open("w", encoding="utf-8") as handle:

@@ -1,23 +1,132 @@
 {
-  "updated_at": "2026-08-05T06:29:42.611085+00:00",
+  "updated_at": "2026-08-05 14:33:18",
   "snapshot": {
     "symbol": "BTC/USDT",
-    "price": 64321.14,
-    "volume_ratio": 0.94,
+    "price": 64319.58,
+    "volume_ratio": 0.21,
     "trend": "sideways",
-    "liquidity_ok": true,
+    "liquidity_ok": false,
     "source": "binance_testnet"
   },
   "indicators": {
-    "price": 64321.14,
-    "ema20": 64268.4989,
-    "ema50": 64226.3912,
-    "rsi14": 47.4934,
-    "atr14": 374.6871,
-    "volume_ratio": 0.9427,
-    "change_24h_pct": 0.3174,
+    "price": 64319.58,
+    "ema20": 64273.1086,
+    "ema50": 64231.9949,
+    "rsi14": 47.8794,
+    "atr14": 368.3707,
+    "volume_ratio": 0.2059,
+    "change_24h_pct": 0.2956,
     "high_24h": 65510.52,
-    "low_24h": 58406.23,
-    "trend": "sideways"
-  }
+    "low_24h": 58406.23
+  },
+  "risk": {
+    "consecutive_losses": 0,
+    "drawdown_pct": 0.0,
+    "trading_halted": false,
+    "halt_reasons": []
+  },
+  "portfolio": {
+    "starting_cash": 277.0,
+    "cash": 270.564942,
+    "positions": {
+      "BTCUSDT": {
+        "quantity": 0.0001,
+        "avg_cost": 64350.579999999994,
+        "cost_basis": 6.435058
+      }
+    },
+    "position_value": 6.431958,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": -0.0031,
+    "equity": 276.9969,
+    "max_drawdown_pct": 0.0
+  },
+  "agents": {
+    "数据工程师": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "K线采集落盘 | BTC/USDT @ 64319.58"
+    },
+    "技术分析员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "RSI 47.9 | ATR 368 | 量比 0.21"
+    },
+    "市场状态官": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "状态: sideways | 流动性 异常"
+    },
+    "风险官": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "连亏 0 | 回撤 0.0% | 正常"
+    },
+    "组合经理": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "净值 277.00 | 持仓 1 个 | 回撤 0.0%"
+    },
+    "审计员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "审计与账本持续写入（audit.jsonl / orders.jsonl）"
+    },
+    "经营报告员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "每日 09:00 经营报告（cron 自动）"
+    },
+    "成本与资源管理员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "Token 用量登记与成本监控（record_usage）"
+    },
+    "API与应急响应官": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "看门狗每 30 分钟巡检，异常立即告警"
+    },
+    "执行交易员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "测试网适配器就绪（Binance/Hyperliquid），订单经风控后执行"
+    },
+    "CEO / 总交易代理": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "每日 10/22 点研究+决策介入（cron），重大事件立即处理"
+    },
+    "策略研究员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "1 个信号 | 最强: pullback_rebound buy @ 0.68"
+    },
+    "情绪与传播研究员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "neutral (score -0.013)"
+    },
+    "事件交易员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "idle",
+      "output": "无活跃事件，持续监控"
+    },
+    "宏观与新闻研究员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "事件库 0 条（CEO 定时扫描新闻源）"
+    },
+    "链上数据分析员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "链上信号库 0 条（CEO 定时用链上工具扫描）"
+    },
+    "聪明钱包研究员": {
+      "last_run": "2026-08-05 14:33:18",
+      "status": "ok",
+      "output": "链上信号库 0 条（CEO 定时用链上工具扫描）"
+    }
+  },
+  "events_recent": 0
 }

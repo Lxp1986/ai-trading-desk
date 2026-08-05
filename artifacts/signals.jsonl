@@ -1,0 +1,4 @@
+{"time": "2026-08-05 14:32:13", "signals": [{"strategy": "pullback_rebound", "action": "buy", "strength": 0.68, "reason": "多头排列回踩 EMA50（0.26 ATR），RSI 48 修复中", "conditions": {"distance_atr": 0.26, "rsi": 48.4}}]}
+{"time": "2026-08-05 14:32:21", "signals": [{"strategy": "pullback_rebound", "action": "buy", "strength": 0.68, "reason": "多头排列回踩 EMA50（0.26 ATR），RSI 48 修复中", "conditions": {"distance_atr": 0.26, "rsi": 48.4}}]}
+{"time": "2026-08-05 14:33:16", "signals": [{"strategy": "pullback_rebound", "action": "buy", "strength": 0.68, "reason": "多头排列回踩 EMA50（0.24 ATR），RSI 48 修复中", "conditions": {"distance_atr": 0.24, "rsi": 47.9}}]}
+{"time": "2026-08-05 14:33:18", "signals": [{"strategy": "pullback_rebound", "action": "buy", "strength": 0.68, "reason": "多头排列回踩 EMA50（0.24 ATR），RSI 48 修复中", "conditions": {"distance_atr": 0.24, "rsi": 47.9}}]}

@@ -60,6 +60,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         market = state.get("snapshot", {}) or {}
         indicators = state.get("indicators", {}) or {}
         risk = state.get("risk", {}) or {}
+        agents = state.get("agents", {}) or {}
 
         return {
             "mode": "simulation",
@@ -91,6 +92,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "employees": snapshot(),
             "research_team": research_team(),
             "employee_counts": counts(),
+            "agents_work": agents,
             "token_usage": token_usage,
         }
 
