@@ -25,18 +25,18 @@ sys.path.insert(0, str(ROOT / "src"))
 EVENTS_PATH = ROOT / "artifacts" / "events.jsonl"
 ALERT_PENDING = ROOT / "artifacts" / "alert_pending.json"
 
-# ---- L0 价格异常阈值（10 秒粒度）----
-PRICE_SPIKE_PCT = 0.2     # 10 秒波动 ≥0.2% → 事件（BTC；≈1.2%/分钟）
-PRICE_SPIKE_ALT = 0.3     # 其他标的 0.3%（alt 波动大）
+# ---- L0 价格异常阈值（5 秒粒度）----
+PRICE_SPIKE_PCT = 0.15    # 5 秒波动 ≥0.15% → 事件（BTC；≈1.8%/分钟）
+PRICE_SPIKE_ALT = 0.2     # 其他标的 0.2%（alt 波动大）
 PRICE_SYMBOL = "BTCUSDT"
 
 # ---- 分层频率（秒）----
-TICK = 10                      # 基础 tick：价格 10 秒一次（交易所级实时感知）
-NEWS_EVERY = 30                # 新闻 5 分钟（30 tick）
-ONCHAIN_EVERY = 90             # 链上 15 分钟（90 tick）
-MOVERS_EVERY = 90              # 鱼群 15 分钟
-SENTIMENT_EVERY = 360          # 情绪 60 分钟（360 tick）
-MACRO_EVERY = 360              # 宏观 60 分钟
+TICK = 5                       # 基础 tick：价格 5 秒一次（REST 轮询极限内最密）
+NEWS_EVERY = 60                # 新闻 5 分钟（60 tick）
+ONCHAIN_EVERY = 180            # 链上 15 分钟（180 tick）
+MOVERS_EVERY = 180             # 鱼群 15 分钟
+SENTIMENT_EVERY = 720          # 情绪 60 分钟（720 tick）
+MACRO_EVERY = 720              # 宏观 60 分钟
 
 _last_price: float | None = None
 _last_prices: dict[str, float] = {}
@@ -93,7 +93,7 @@ def check_price() -> None:
                 event = {
                     "type": "price_spike",
                     "level": "L2" if abs(change) < 3 else "L3",
-                    "detail": f"10秒内 {symbol} {direction} {change:+.2f}% ({prev:.4g} → {price:.4g})",
+                    "detail": f"5秒内 {symbol} {direction} {change:+.2f}% ({prev:.4g} → {price:.4g})",
                     "symbol": symbol,
                     "at": now_cn(),
                 }
@@ -184,7 +184,7 @@ def update_sentiment_every_60m() -> None:
 
 
 def main() -> None:
-    log("高频守护进程启动（分层调度: 价格10s / 新闻5m / 链上15m / 情绪60m）")
+    log("高频守护进程启动（分层调度: 价格5s / 新闻5m / 链上15m / 情绪60m）")
     tick = 0
     while True:
         try:
