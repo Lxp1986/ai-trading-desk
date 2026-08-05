@@ -133,11 +133,22 @@ def run_agents_work(indicators: dict, prev_state: dict,
     agents["CEO / 总交易代理"] = {"last_run": now, "status": "ok",
                                  "output": "每日 10/22 点研究+决策介入（cron），重大事件立即处理"}
 
-    # —— 策略研究员：主动出信号（应用自适应权重）并落盘 ——
+    # —— 策略研究员：主动出信号（应用自适应权重 + 事件规则）并落盘 ——
     try:
         from autotrader.strategy_tracker import apply_weights, update_weights
         weights = update_weights()  # 按绩效更新权重（连亏降权/停用）
-        signals = [s.to_dict() for s in apply_weights(apply_strategies(indicators, events), weights)]
+        # 事件规则消费（学习引擎产出：偏空事件后 buy 降权 → 运行时生效）
+        event_rules = []
+        rules_path = ROOT / "artifacts" / "event_rules.json"
+        if rules_path.exists():
+            try:
+                event_rules = json.loads(
+                    rules_path.read_text(encoding="utf-8")).get("rules", [])
+            except (OSError, ValueError):
+                event_rules = []
+        signals = [s.to_dict() for s in apply_weights(
+            apply_strategies(indicators, events, timeframe="15m",
+                             event_rules=event_rules), weights)]
         with SIGNALS_PATH.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"time": now, "signals": signals}, ensure_ascii=False) + "\n")
         summary = f"{len(signals)} 个信号"
@@ -313,6 +324,25 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
             log(f"⚙️ 主动调仓: {len(acted)} 笔执行 ({summary})")
     except Exception as exc:
         log(f"⚠️ 主动调仓失败: {exc}")
+
+    # 开仓引擎（信号 → 开仓：机会榜最强 buy 信号，风控闸门强制；补齐执行闭环）
+    try:
+        from autotrader.position_manager import open_position
+        opps = opportunities.get("opportunities", []) if isinstance(opportunities, dict) else []
+        buys = [o for o in opps
+                if (o.get("best") or {}).get("action") == "buy"
+                and (o.get("best") or {}).get("strength", 0) >= 0.5]
+        if buys:
+            top = max(buys, key=lambda o: (o["best"] or {}).get("strength", 0))
+            sym = top["symbol"]
+            px = (prices or {}).get(sym)
+            opened = open_position(client, sym, top["best"], px)
+            if opened.get("ok"):
+                log(f"🟢 开仓: {sym} {opened['quantity']}（{opened['reason']}）")
+            elif opened.get("action") != "no_open":
+                log(f"⏸ 开仓未执行: {sym} {opened.get('reason', '')[:80]}")
+    except Exception as exc:
+        log(f"⚠️ 开仓引擎失败: {exc}")
 
     state = {
         "updated_at": now_cn(),

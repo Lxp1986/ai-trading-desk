@@ -68,15 +68,28 @@ def load_positions() -> dict[str, dict[str, Any]]:
                 "cost_basis": float(p.cost_basis)} for s, p in poss.items()}
 
 
-def _latest_price(symbol: str) -> float | None:
-    """取最新价格：live_prices.json 优先，state.json 兜底。"""
+def _latest_price(symbol: str, max_age_s: int = 300) -> float | None:
+    """取最新价格：live_prices.json 优先（≤5 分钟新鲜度），state.json 兜底。
+
+    陈旧价格（数据源中断）返回 None——决策层不得用过期价交易。
+    """
+    import time as _t
     lp = POSITIONS_PATH.parent / "live_prices.json"
     if lp.exists():
         try:
             data = json.loads(lp.read_text(encoding="utf-8"))
             item = data.get("prices", {}).get(symbol)
             if item and item.get("price"):
-                return float(item["price"])
+                updated = data.get("updated_at", "")
+                # 新鲜度校验（updated_at 为本地时间字符串）
+                try:
+                    from datetime import datetime as _dt
+                    ts = _dt.strptime(str(updated), "%Y-%m-%d %H:%M:%S")
+                    age = (_dt.now() - ts).total_seconds()
+                    if age <= max_age_s:
+                        return float(item["price"])
+                except (ValueError, TypeError):
+                    pass
         except (OSError, ValueError):
             pass
     if STATE_PATH.exists():
@@ -247,8 +260,58 @@ def emergency_stop_loss(client: Any, prices: dict[str, float] | None = None) -> 
 
 # ---------- 执行链（下单 + 审计 + 账本） ----------
 
+# 防重复窗口：同一 symbol+side 在 N 秒内只执行一次（guardian 30s 与 runner 15m 竞态防护）
+DEDUP_WINDOW_S = 300
+_LAST_ORDERS: dict[tuple[str, str], float] = {}
+
+
+def _risk_gate(symbol: str, side: str) -> dict[str, Any]:
+    """硬风控闸门：熔断时 BUY 冻结、SELL/HOLD 放行；连亏≥5 暂停新仓。
+
+    返回 {"ok": True} 或 {"ok": False, "reason": ...}。
+    """
+    try:
+        from autotrader.portfolio import load_orders
+        from autotrader.risk import compute_state
+        orders = load_orders(ORDERS_PATH) if ORDERS_PATH.exists() else []
+        state = compute_state(orders)
+        if state.trading_halted and side == "BUY":
+            reasons = "; ".join(state.halt_reasons or ("风控熔断",))
+            return {"ok": False, "reason": f"风控熔断，BUY 冻结（{reasons}）"}
+        if side == "BUY" and state.consecutive_losses >= 5:
+            return {"ok": False,
+                    "reason": f"连亏 {state.consecutive_losses} 笔 ≥5，暂停新仓（硬风控）"}
+        return {"ok": True}
+    except Exception as exc:
+        # 风控不可用时保守拒绝 BUY（宁可错过不可违规）
+        if side == "BUY":
+            return {"ok": False, "reason": f"风控不可用，BUY 保守拒绝（{str(exc)[:60]}）"}
+        return {"ok": True}
+
+
+def _dedup_ok(symbol: str, side: str) -> bool:
+    """防重复：窗口内同 symbol+side 已执行 → 跳过。"""
+    import time
+    key = (symbol, side)
+    last = _LAST_ORDERS.get(key)
+    now = time.time()
+    if last is not None and now - last < DEDUP_WINDOW_S:
+        return False
+    _LAST_ORDERS[key] = now
+    return True
+
+
 def _execute(client: Any, symbol: str, side: str, qty: float, reason: str) -> dict[str, Any]:
-    """统一执行：测试网下单 → 账本 → 审计。任何失败都不影响主循环。"""
+    """统一执行：风控闸门 → 防重 → 测试网下单 → 账本 → 审计。任何失败都不影响主循环。"""
+    # 熔断强制（SELL 放行、BUY 冻结）
+    gate = _risk_gate(symbol, side)
+    if not gate["ok"]:
+        return {"symbol": symbol, "action": f"{side}_blocked", "reason": reason,
+                "error": gate["reason"], "ok": False}
+    # 防重复（双进程竞态防护：guardian 30s + runner 15m）
+    if not _dedup_ok(symbol, side):
+        return {"symbol": symbol, "action": f"{side}_deduped", "reason": reason,
+                "error": "防重窗口内已执行", "ok": False}
     try:
         order = client.create_test_order(symbol, side, str(round(qty, 8)))
         logged_at = now_iso()
@@ -277,6 +340,79 @@ def _execute(client: Any, symbol: str, side: str, qty: float, reason: str) -> di
     except Exception as exc:
         return {"symbol": symbol, "action": f"{side}_failed", "reason": reason,
                 "error": str(exc)[:120], "ok": False}
+
+
+# ---------- 开仓引擎（补齐执行闭环第一环：信号 → 开仓） ----------
+
+# 单标的仓位上限（集中度控制，防满仓）
+MAX_POSITION_PCT = 20.0    # 单标的 ≤ 现金 20%
+MIN_TRADE_USDT = 5.0       # 最小开仓金额（测试网最小下单约束）
+MAX_POSITIONS = 3          # 最多同时持仓数（分散风险）
+
+
+def open_position(client: Any, symbol: str, signal: dict[str, Any],
+                  price: float | None = None,
+                  events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """开仓引擎：信号 → 风控闸门 → 仓位计算 → 下单 → 账本审计。
+
+    风控闸门（全部强制）：
+    - 熔断/连亏（_risk_gate）
+    - 已有持仓 → 不重复开仓（交给 manage 加仓逻辑）
+    - 持仓数 ≥ MAX_POSITIONS → 拒绝（分散风险）
+    - 信号强度 < 0.5 → 拒绝（弱信号不开仓）
+    - 价格新鲜度（_latest_price 已校验）
+
+    仓位计算：单笔风险预算 = 现金 × 1% ÷ 止损距离(%)；
+    上限 = 现金 × MAX_POSITION_PCT；下限 = MIN_TRADE_USDT。
+    """
+    if str(signal.get("action", "")).lower() != "buy":
+        return {"symbol": symbol, "action": "no_open", "reason": "非买入信号", "ok": False}
+    strength = float(signal.get("strength", 0) or 0)
+    if strength < 0.5:
+        return {"symbol": symbol, "action": "no_open",
+                "reason": f"信号强度 {strength:.2f} < 0.5（弱信号不开仓）", "ok": False}
+    # 已有持仓 → 不重复开仓
+    positions = load_positions()
+    if symbol in positions and positions[symbol]["quantity"] > 0:
+        return {"symbol": symbol, "action": "no_open",
+                "reason": f"已持有 {symbol}，不重复开仓（调仓由 manage 处理）", "ok": False}
+    if len(positions) >= MAX_POSITIONS:
+        return {"symbol": symbol, "action": "no_open",
+                "reason": f"持仓数 {len(positions)} ≥ {MAX_POSITIONS}（分散风险限制）", "ok": False}
+    # 价格（新鲜度已校验）
+    px = price or _latest_price(symbol)
+    if not px or px <= 0:
+        return {"symbol": symbol, "action": "no_open", "reason": "价格不可用", "ok": False}
+    # 仓位计算：风险预算法
+    from autotrader.portfolio import cash_balance, load_orders
+    orders = load_orders(ORDERS_PATH) if ORDERS_PATH.exists() else []
+    cash = cash_balance(orders)
+    if cash <= 0:
+        return {"symbol": symbol, "action": "no_open", "reason": "无可用现金", "ok": False}
+    levels = levels_for(symbol)
+    stop_dist_pct = levels["stop_loss_pct"]  # 止损距离（%）
+    risk_budget = cash * 0.01                 # 单笔风险预算 = 现金 1%
+    risk_qty = (risk_budget / (px * stop_dist_pct / 100)) if stop_dist_pct > 0 else 0.0
+    cap_qty = (cash * MAX_POSITION_PCT / 100) / px
+    qty = min(risk_qty, cap_qty)
+    if qty * px < MIN_TRADE_USDT:
+        return {"symbol": symbol, "action": "no_open",
+                "reason": f"开仓金额 {qty * px:.2f} < {MIN_TRADE_USDT} USDT（过小）", "ok": False}
+    result = _execute(client, symbol, "BUY", qty,
+                      f"开仓（{signal.get('strategy', '')} 强度{strength:.2f}，"
+                      f"风险预算 {risk_budget:.2f} USDT @ 止损 {stop_dist_pct}%）")
+    if result.get("ok"):
+        # 审计开仓决策（交易假设）
+        with AUDIT_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "ts": now_cn(), "type": "open_position",
+                "symbol": symbol, "signal": signal.get("strategy", ""),
+                "strength": strength, "quantity": round(qty, 8),
+                "price": round(px, 4), "stop_loss_pct": stop_dist_pct,
+                "risk_budget": round(risk_budget, 2),
+                "reason": signal.get("reason", "")[:200],
+            }, ensure_ascii=False) + "\n")
+    return result
 
 
 # ---------- 一键全流程 ----------

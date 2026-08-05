@@ -45,7 +45,9 @@ STRATEGY_PARAMS: dict[str, dict[str, float]] = {
            "rsi_sell_min": 18, "rsi_sell_max": 48, "rsi_oversold": 18, "rsi_overbought": 82},
 }
 
+import json
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 @dataclass
@@ -188,6 +190,24 @@ def event_driven(events: list[dict[str, Any]]) -> StrategySignal | None:
     return None
 
 
+def _load_external_params() -> dict[str, dict[str, float]]:
+    """加载学习引擎产出的参数覆盖（artifacts/strategy_params.json）。
+
+    自主升级核心：learning_engine.learn_params() 可按市场状态/事件学习
+    调整各周期参数（如收紧/放宽 RSI 阈值），写该文件后运行时自动生效，
+    无需改代码——策略参数从硬编码变为"可学习"。
+    """
+    import os
+    path = Path(os.environ.get("ARTIFACTS_DIR", Path(__file__).resolve().parents[2] / "artifacts")) / "strategy_params.json"
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data.get("params", {}) or {}
+    except Exception:
+        pass
+    return {}
+
+
 def apply_strategies(ind: dict[str, Any],
                      events: list[dict[str, Any]] | None = None,
                      timeframe: str = "15m",
@@ -196,9 +216,13 @@ def apply_strategies(ind: dict[str, Any],
 
     - timeframe：决定策略组合（TIMEFRAME_STRATEGIES）与参数（STRATEGY_PARAMS）；
     - event_rules：学习引擎产出的事件规则（如"A级偏空事件后 buy 降权"），
-      作用于 event_driven 之外的信号强度调节。
+      作用于 event_driven 之外的信号强度调节；
+    - 参数覆盖：strategy_params.json（学习引擎产出）优先于硬编码 STRATEGY_PARAMS。
     """
-    params = STRATEGY_PARAMS.get(timeframe, {})
+    params = dict(STRATEGY_PARAMS.get(timeframe, {}))
+    # 自主升级：外部参数覆盖（学习引擎 learn_params 写入）
+    ext = _load_external_params().get(timeframe, {})
+    params.update(ext)
     names = TIMEFRAME_STRATEGIES.get(timeframe, TIMEFRAME_STRATEGIES["15m"])
     signals: list[StrategySignal] = []
     for name in names:
