@@ -67,12 +67,12 @@ class TestSigning(unittest.TestCase):
             self.assertEqual(signed["action"], action)
             self.assertIsInstance(signed["nonce"], int)
             signature = signed["signature"]
-            self.assertIsInstance(signature, str)
-            self.assertEqual(len(signature), 128)  # 64 字节 hex
-            try:
-                bytes.fromhex(signature)
-            except ValueError:
-                self.fail("signature not hex")
+            # 官方方案：signature 为 {r, s, v} dict（EIP-712 ECDSA）
+            self.assertIsInstance(signature, dict)
+            self.assertEqual(sorted(signature.keys()), ["r", "s", "v"])
+            self.assertIn(signature["v"], (27, 28))
+            self.assertTrue(signature["r"].startswith("0x"))
+            self.assertTrue(signature["s"].startswith("0x"))
 
     @unittest.skipUnless(_has_cryptography(), "需要 cryptography 库")
     def test_derive_address_is_hex(self) -> None:
@@ -80,7 +80,7 @@ class TestSigning(unittest.TestCase):
             adapter = HyperliquidAdapter(private_key_env="HL_TEST_KEY")
             address = adapter._derive_address()
             self.assertTrue(address.startswith("0x"))
-            self.assertEqual(len(address), 66)  # 0x + 64 hex
+            self.assertEqual(len(address), 42)  # 0x + 40 hex（EVM 地址格式）
 
 
 class TestPublicMarket(unittest.TestCase):

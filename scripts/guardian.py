@@ -64,6 +64,7 @@ def raise_alert(level: str, summary: str) -> None:
 
 _ORDER_CLIENT = None
 _HL_CLIENT = None
+_OKX_CLIENT = None
 
 
 def _order_client():
@@ -87,6 +88,23 @@ def _hl_client():
     return _HL_CLIENT
 
 
+def _okx_client():
+    """OKX Demo Trading 兜底下单客户端（懒加载；无需充值，自带虚拟资金）。"""
+    global _OKX_CLIENT
+    if _OKX_CLIENT is None:
+        try:
+            from autotrader.okx import OkxDemoAdapter
+            _OKX_CLIENT = OkxDemoAdapter()
+        except Exception:
+            _OKX_CLIENT = None
+    return _OKX_CLIENT
+
+
+def _fallback_clients():
+    """兜底下单客户端链（OKX Demo 优先，HL 次之）。"""
+    return [c for c in (_okx_client(), _hl_client()) if c is not None]
+
+
 def check_price() -> None:
     """L0：实时价格快照（30 秒） + 异常检测 + 持仓实时监控/紧急止损。"""
     global _last_price
@@ -108,7 +126,7 @@ def check_price() -> None:
         mon = monitor_positions(price_map)
         if mon.get("count", 0) > 0:
             emg = emergency_stop_loss(_order_client(), price_map,
-                                      fallback_client=_hl_client())
+                                      fallback_client=_fallback_clients())
             if emg.get("executed"):
                 for ex in emg["executed"]:
                     write_event({

@@ -164,15 +164,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             })
         return result
 
-    # ---------- 签名 ----------
-    def _crypto(self):
-        try:
-            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-            return Ed25519PrivateKey
-        except ImportError as exc:  # pragma: no cover
-            raise ExchangeError(
-                "Hyperliquid 交易需要 cryptography 库（ed25519 签名）：pip install cryptography"
-            ) from exc
+    # ---------- 签名（官方 EIP-712 + ECDSA，纯 stdlib 实现） ----------
 
     def _private_key_hex(self) -> str:
         key = os.environ.get(self.private_key_env, "")
@@ -183,24 +175,33 @@ class HyperliquidAdapter(ExchangeAdapter):
         return key.strip().lower().replace("0x", "")
 
     def _derive_address(self) -> str:
+        """Hyperliquid 地址 = keccak256(未压缩公钥[1:]) 后 20 字节（标准 EVM 地址）。
+
+        私钥即用户 EVM 私钥（官方 SDK 用 eth_account 同款）。
+        """
         if self.wallet_address:
             return self.wallet_address
-        Ed25519PrivateKey = self._crypto()
-        raw = bytes.fromhex(self._private_key_hex())
-        private_key = Ed25519PrivateKey.from_private_bytes(raw)
-        public_bytes = private_key.public_key().public_bytes_raw()
-        return "0x" + public_bytes.hex()
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        key = bytes.fromhex(self._private_key_hex())
+        private_key = ec.derive_private_key(int.from_bytes(key, "big"), ec.SECP256K1())
+        pub_bytes = private_key.public_key().public_bytes(
+            Encoding.X962, PublicFormat.UncompressedPoint)
+        digest = keccak256(pub_bytes[1:])
+        return "0x" + digest[-20:].hex()
 
     def _sign(self, action: dict[str, Any]) -> dict[str, Any]:
-        """构造签名请求：{action, nonce, signature}。"""
-        Ed25519PrivateKey = self._crypto()
+        """构造签名请求：官方 sign_l1_action → {action, nonce, signature:{r,s,v}}。"""
+        from .hl_crypto import sign_l1_action
+
         nonce = int(time.time() * 1000)
-        message = {"action": action, "nonce": nonce}
-        canonical = json.dumps(message, separators=(",", ":"), sort_keys=True)
-        digest = keccak256(canonical.encode("utf-8"))
-        private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(self._private_key_hex()))
-        signature = private_key.sign(digest).hex()
-        return {"action": action, "nonce": nonce, "signature": signature}
+        signed = sign_l1_action(
+            self._private_key_hex(), action, None, nonce, None, self.is_live)
+        # 官方 _post_action 附加 vaultAddress/expiresAfter
+        signed["vaultAddress"] = None
+        signed["expiresAfter"] = None
+        return signed
 
     # ---------- 账户 ----------
     def account(self) -> dict[str, Any]:
@@ -238,6 +239,8 @@ class HyperliquidAdapter(ExchangeAdapter):
     # ---------- 订单 ----------
     def create_order(self, *, symbol: str, side: str, quantity: float,
                      order_type: str = "MARKET", price: float | None = None) -> OrderResult:
+        from .hl_crypto import float_to_wire
+
         asset_index = self._asset_index(symbol)
         is_buy = side.lower() == "buy"
         if order_type.upper() == "MARKET" or price is None:
@@ -247,19 +250,24 @@ class HyperliquidAdapter(ExchangeAdapter):
         else:
             tif = "Gtc"
         order = {
-            "a": asset_index, "b": is_buy, "p": f"{price:.6f}", "s": f"{quantity:.6f}",
+            "a": asset_index, "b": is_buy,
+            "p": float_to_wire(price), "s": float_to_wire(quantity),
             "r": False, "t": {"limit": {"tif": tif}},
         }
-        response = self._exchange(self._sign({"type": "order", "orders": [order]}))
+        # 官方 order_action 必带 grouping（默认 "na"）
+        action = {"type": "order", "orders": [order], "grouping": "na"}
+        response = self._exchange(self._sign(action))
         statuses = (response.get("response") or {}).get("data", {}).get("statuses", [])
         status = statuses[0] if statuses else {}
         if "error" in status:
             raise ExchangeError(f"Hyperliquid order rejected: {status['error']}")
         oid = str((status.get("resting") or {}).get("oid") or (status.get("filled") or {}).get("oid") or "")
+        filled_px = (status.get("filled") or {}).get("avgPx")
         return OrderResult(
             order_id=oid, symbol=symbol, side=side.lower(),
             status="FILLED" if "filled" in status else "NEW",
-            quantity=quantity, price=price, avg_fill_price=price,
+            quantity=quantity, price=price,
+            avg_fill_price=float(filled_px) if filled_px else None,
             quote_qty=quantity * price, raw=response,
         )
 

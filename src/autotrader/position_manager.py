@@ -310,7 +310,7 @@ def _dedup_ok(symbol: str, side: str) -> bool:
 
 def _execute(client: Any, symbol: str, side: str, qty: float, reason: str,
              fallback_client: Any = None) -> dict[str, Any]:
-    """统一执行：风控闸门 → 防重 → 测试网下单（主客户端失败自动切兜底）→ 账本 → 审计。"""
+    """统一执行：风控闸门 → 防重 → 测试网下单（主客户端失败自动切兜底链）→ 账本 → 审计。"""
     # 熔断强制（SELL 放行、BUY 冻结）
     gate = _risk_gate(symbol, side)
     if not gate["ok"]:
@@ -328,18 +328,21 @@ def _execute(client: Any, symbol: str, side: str, qty: float, reason: str,
                                     quantity=f"{round(qty, 6):.6f}")
     except Exception as exc:
         order_err = str(exc)[:100]
-        # 主客户端故障 → 兜底（HL，符号去 USDT，OrderResult 格式适配）
-        if fallback_client is not None:
+        # 主客户端故障 → 兜底链逐个尝试（如 [OKX Demo, Hyperliquid]）
+        fallbacks = fallback_client if isinstance(fallback_client, (list, tuple)) \
+            else ([fallback_client] if fallback_client else [])
+        for fb in fallbacks:
             try:
-                res = fallback_client.create_order(
+                res = fb.create_order(
                     symbol=symbol.replace("USDT", ""), side=side,
                     quantity=round(qty, 6))
                 order = {"orderId": res.order_id, "status": res.status,
                          "avgFillPrice": res.avg_fill_price,
                          "price": res.price or 0, "transactTime": None}
                 order_err = ""
+                break
             except Exception as exc2:
-                order_err = f"{order_err} → HL 兜底也失败: {str(exc2)[:80]}"
+                order_err = f"{order_err} → {getattr(fb, 'name', 'fallback')} 也失败: {str(exc2)[:60]}"
     if order is None:
         return {"symbol": symbol, "action": f"{side}_failed", "reason": reason,
                 "error": order_err[:160], "ok": False}

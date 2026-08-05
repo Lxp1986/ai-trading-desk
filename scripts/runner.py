@@ -254,7 +254,7 @@ def run_agents_work(indicators: dict, prev_state: dict,
 
 
 def run_once(client: BinanceSpotTestnet, prev_state: dict,
-             fallback_client=None) -> dict:
+             fallback_client=None, fallback_exec_clients: list | None = None) -> dict:
     """执行一轮采集+计算，返回本轮状态。
 
     fallback_client：主客户端（Binance 测试网）故障时自动切换
@@ -318,7 +318,7 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
     try:
         from autotrader.position_manager import manage
         manage_report = manage(client, signals=None, prices=prices,
-                               fallback_client=fallback_client)
+                               fallback_client=fallback_exec_clients or fallback_client)
         acted = [a for a in manage_report.get("actions", []) if a.get("ok")]
         if acted:
             summary = "; ".join("%s %s" % (a["symbol"], a["action"]) for a in acted[:3])
@@ -338,7 +338,7 @@ def run_once(client: BinanceSpotTestnet, prev_state: dict,
             sym = top["symbol"]
             px = (prices or {}).get(sym)
             opened = open_position(client, sym, top["best"], px,
-                                   fallback_client=fallback_client)
+                                   fallback_client=fallback_exec_clients or fallback_client)
             if opened.get("ok"):
                 log(f"🟢 开仓: {sym} {opened['quantity']}（{opened['reason']}）")
             elif opened.get("action") != "no_open":
@@ -382,7 +382,7 @@ def main() -> None:
     args = parser.parse_args()
 
     client = BinanceSpotTestnet()
-    # 兜底客户端：Binance 测试网 502 时自动切换（Hyperliquid 测试网）
+    # 兜底客户端：Binance 测试网 502 时自动切换（Hyperliquid 测试网，行情/扫描）
     try:
         from autotrader.hyperliquid import HyperliquidAdapter
         fallback_client = HyperliquidAdapter(mode="testnet")
@@ -390,6 +390,16 @@ def main() -> None:
     except Exception as exc:
         fallback_client = None
         log(f"⚠️ Hyperliquid 兜底客户端不可用: {exc}")
+    # 执行兜底链（下单用）：OKX Demo → Hyperliquid
+    fallback_exec_clients: list = []
+    try:
+        from autotrader.okx import OkxDemoAdapter
+        fallback_exec_clients.append(OkxDemoAdapter())
+        log("✅ OKX Demo 执行兜底就绪（无需充值，虚拟资金）")
+    except Exception as exc:
+        log(f"⚠️ OKX Demo 执行兜底不可用: {exc}")
+    if fallback_client is not None:
+        fallback_exec_clients.append(fallback_client)
     prev_state: dict = {}
     if STATE_PATH.exists():
         try:
@@ -407,7 +417,8 @@ def main() -> None:
     log(f"运行循环启动: 间隔 {args.interval} 分钟 | 测试网执行 + 本地账本主记录")
     while True:
         try:
-            prev_state = run_once(client, prev_state, fallback_client)
+            prev_state = run_once(client, prev_state, fallback_client,
+                                  fallback_exec_clients)
         except Exception as exc:  # 单轮失败不阻塞循环
             log(f"本轮失败（继续下一轮）: {exc}")
         if args.once:
