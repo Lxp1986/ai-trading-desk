@@ -10,6 +10,7 @@ TOKEN_USAGE = ROOT / "artifacts" / "token_usage.json"
 STATE = ROOT / "artifacts" / "state.json"
 SIGNALS = ROOT / "artifacts" / "signals.jsonl"
 WEIGHTS = ROOT / "artifacts" / "strategy_weights.json"
+EVENTS = ROOT / "artifacts" / "events.jsonl"
 STARTING_CAPITAL_USDT = 277.0
 
 import sys
@@ -113,6 +114,32 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 策略真实状态（权重 + 最近触发）
         strategies = _strategies_status()
 
+        # 事件记录（事件中心页）
+        events = []
+        if EVENTS.exists():
+            try:
+                for line in EVENTS.read_text(encoding="utf-8").splitlines()[-30:]:
+                    if line.strip():
+                        events.append(json.loads(line))
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        # 最近交易假设（经营总览 / 持仓页共用）
+        recent_decisions = [
+            {
+                "time": (d.get("decision") or {}).get("decided_at") or d.get("decided_at") or d.get("time", ""),
+                "symbol": (d.get("decision") or {}).get("intent", {}).get("symbol", "—"),
+                "side": (d.get("decision") or {}).get("intent", {}).get("side", "hold"),
+                "value": (d.get("decision") or {}).get("simulated_value", 0),
+                "confidence": (d.get("decision") or {}).get("intent", {}).get("confidence", 0),
+                "approved": (d.get("decision") or {}).get("approved", False),
+                "reasons": list((d.get("decision") or {}).get("reasons", [])),
+            }
+            for d in decisions[-8:]
+        ]
+
+        staff_active = sum(1 for e in snapshot() if e["status"] == "active")
+
         return {
             "mode": "simulation",
             "network": "Binance Spot Testnet",
@@ -145,6 +172,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "employee_counts": counts(),
             "agents_work": agents,
             "strategies": strategies,
+            "events": events,
+            "recent_decisions": recent_decisions,
+            "staff_active": staff_active,
+            "liquidity_ok": market.get("liquidity_ok"),
             "token_usage": token_usage,
         }
 
