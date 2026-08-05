@@ -1,101 +1,186 @@
-# AI自主交易事业部
+# AI自主交易事业部 · 自适应交易运营系统
 
-研究优先、模拟优先的交易控制平面。当前阶段**不接交易所、不保存API密钥、不执行真实下单**，先把可审计的决策、风控、报告和回放链路跑通，再根据运行结果逐步完善。
+> 一个**可打包交付、可无差别接管**的 AI 交易运营系统：Hermes 任 CEO 全权经营，
+> 17 名 Agent 员工平时主动履职、随时可指派；数据驱动的策略自适应调整；
+> 硬风控程序强制。当前阶段运行于 **Binance Spot Testnet 模拟盘**（30 天验证期）。
 
-## 当前闭环
+---
 
-```text
-市场快照 → CEO交易假设 → 风控审核 → 模拟执行 → 审计日志 → 经营报告
-```
+## 1. 这是什么
 
-## 原则
+把"AI 交易事业部"做成一套**不依赖任何 LLM API 的完整运营系统**：
 
-- 董事长观点是研究输入，不是交易指令。
-- CEO在授权边界内形成独立交易假设。
-- 风控可以否决，执行器不能自行创造交易方向。
-- 原始输入、决策、拒绝原因和模拟结果必须可回放。
-- 未通过测试和模拟门槛前，不接真实交易权限。
+- **Hermes（模型执行者）= CEO**：草拟交易假设、研究归纳、证据冲突分析、持仓复核、报告文字化；
+- **本地程序（确定性）= 全员员工**：行情采集、指标、市场状态、策略、风控、账本、审计、报告——零 Token 成本、7×24 常驻；
+- **硬风控独立否决**：连亏 5 笔暂停新仓、回撤 15% 停自动开仓、25% 全平、单笔风险 ≤ 现金 1%，程序强制不可绕过；
+- **自适应**：每笔平仓盈亏按策略归因，连亏 3 笔降权、连亏 5 笔停用、盈利恢复——策略权重随绩效自动调整。
 
-## 大模型接入策略
-
-当前的确定性控制平面不依赖大模型API，可以继续开发和测试。进入“新闻/事件研究、Agent协作、交易假设生成和复盘总结”阶段后，需要接入大模型；模型只负责研究与决策建议，不能绕过独立风控和模拟执行层。
-
-模拟盘执行优先使用 Binance Spot Testnet，以尽早暴露真实API鉴权、订单参数、交易规则、限频、网络和订单状态问题；本机账本仍作为连续30天的主审计记录，因为测试网可能约每月重置数据。
-
-项目不规定必须使用某一个模型或供应商。由 Hermes 根据当前可用API、能力、延迟、成本和故障状态自主选择最合适的Provider；DeepSeek只是可用候选之一，不在项目内重复搭建模型API。
-
-- API Key 只从环境变量读取，不写入代码、配置提交或审计日志；
-- 默认只在手动/事件触发时调用，不让模型每秒读取行情；
-- 本地程序负责行情采集、指标、风控、账本、回测和订单状态；
-- Hermes路由的当前模型负责新闻归纳、证据冲突分析、交易假设草拟、持仓复核和报告文字化；
-- API不可用、余额不足或预算超限时，系统降级为确定性策略/观察模式，不停止安全监控；
-- 先使用模拟数据验证调用、超时、限流、JSON输出、成本统计和降级，再考虑任何真实交易权限。
-
-模型、Provider、价格和可用性属于易变信息，不写死在交易逻辑中；由Hermes运行时路由和降级，项目只记录实际使用的模型/Provider及Token消耗。
-
-## 显示界面与部署方式
-
-本机控制台方案已落地：不购买、不租用、不部署云服务器，全部留在本机。
+## 2. 治理模型（一句话版）
 
 ```text
-本机 Mac
-├── 数据采集与运行循环（scripts/runner.py，每15分钟一轮）
-├── 本地数据库/审计文件（market.db 历史K线、audit.jsonl、orders.jsonl 账本）
-├── 本地模拟交易引擎（DecisionEngine + 硬风控）
-└── 本地Dashboard（dashboard_server.py，仅监听 127.0.0.1:8765）
-                         └── 需要时经Hermes路由调用当前可用模型
+董事会（启动/终止项目）
+  └─ CEO / Hermes（全部日常经营与交易决策）
+       └─ 风险官（硬边界可否决）
+            └─ 执行交易员/适配器（下单，不自创方向）
 ```
 
-这里的“本地服务器”只是Mac上绑定 `127.0.0.1` 的进程，不是公网服务器，局域网其他设备默认也不能访问。界面计划显示：净值/盈亏、持仓、交易假设、风控状态、策略状态、API/Token/资金预警、系统日志和经营报告。
+董事长观点只记录为"待验证假设"，绝不自动转换为交易指令。权责不因短期盈亏改变。
 
-安全原则：不开放公网端口、不使用端口转发、不把API Key放进前端、不允许Dashboard直接下单；即使未来接交易所，也由后台风控服务执行，界面只提交经过审计的操作请求。模型调用时只发送必要的结构化摘要，API Key留在本机环境变量中。
+## 3. 系统架构
 
-因此，服务器不是必需品。只有在需要全天候运行、远程访问、多人协作或高可用时，才另行评估独立设备；当前优先留在本机，先完成本地Dashboard和模拟运行。
+```text
+┌───────────────────────────── 本机控制平面（127.0.0.1） ─────────────────────────────┐
+│                                                                                      │
+│  scripts/runner.py          每 15 分钟一轮：采集→指标→市场状态→风控→组合→策略信号→   │
+│   ── 常驻运行循环            情绪→事件→审计 → 全员"最近工作"写入 state.json          │
+│                                                                                      │
+│  Hermes 介入（cron 10:00/22:00）  研究扫描（新闻/链上）→ 交易假设 → 风控 → 决策落盘   │
+│  经营报告（cron 09:00）           净值/持仓/盈亏/风控/Token → Telegram               │
+│  异常看门狗（cron 每30分钟）       API异常/订单不一致/资金预警 → 立即告警             │
+│                                                                                      │
+│  dashboard_server.py          Dashboard（本地浏览器，5秒自动刷新）                    │
+│                                                                                      │
+│  src/autotrader/                                                                      │
+│  ├─ market.py         市场状态分类器（trend/sideways）+ K线落盘 SQLite               │
+│  ├─ portfolio.py      本地账本：持仓/现金/盈亏/净值/最大回撤（主记录）                │
+│  ├─ risk.py           硬风控：连亏5暂停 / 回撤15%停 / 25%全平 / 单笔风险1%           │
+│  ├─ strategy.py       五类策略：趋势突破/回撤反弹/震荡高抛低吸/防守/事件驱动          │
+│  ├─ strategy_tracker.py  策略绩效归因 + 权重自适应（降权/停用/恢复）                  │
+│  ├─ sentiment.py      情绪状态（资金费率/波动率/量比 → fomo~panic）                  │
+│  ├─ news_research.py  事件分级（A/B/C）→ events.jsonl                                │
+│  ├─ onchain.py        链上信号记录 → onchain.jsonl                                   │
+│  ├─ event_trader.py   五阶段事件交易框架                                             │
+│  ├─ team.py           17 岗位完整档案（职责/输入/输出/权限/考核/失败处理）            │
+│  ├─ exchange.py       交易所统一适配器接口 + LIVE_TRADING_ENABLED 实盘授权开关        │
+│  ├─ binance.py        Binance 适配器（testnet 默认 / live 需授权）                    │
+│  ├─ hyperliquid.py    Hyperliquid 适配器（ed25519 agent key 签名，双模式）            │
+│  ├─ keccak.py         纯 Python Keccak-256（Hyperliquid 签名用）                      │
+│  └─ llm.py            Hermes 集成层（register_thesis / record_usage）                 │
+│                                                                                      │
+│  scripts/agent_dispatch.py   员工调度器：点名即上岗 / --all-deterministic 全员出动    │
+│  scripts/trading_report.py   经营报告生成（区分已验证/历史/推断/拟建设）               │
+│  scripts/watchdog.py         异常看门狗脚本                                          │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-### Binance Spot Testnet安全边界
+**数据流**：行情 → market.py → 指标/状态 → 策略（权重自适应）→ 信号 → Hermes 决策 → risk.py 风控 → 账本/审计 → 报告/Dashboard。
 
-- 只允许 `https://testnet.binance.vision`，代码中拒绝正式网域名；
-- API Key和Secret只从环境变量读取；
-- 不使用正式网Key，不充值，不提现；
-- 先验证公开行情，再验证账户查询和虚拟订单；
-- 区分 `/api/v3/order/test`（只校验参数、不成交）与 `/api/v3/order`（测试网虚拟订单）；
-- 测试网订单仍必须经过本地CEO意图和独立风控；
-- 测试网的虚拟资产不可转出，数据可能每月重置；
-- 本机账本、审计日志和经营报告不依赖测试网保留。
-
-## 运行
-
-需要 Python ≥3.11（推荐 Homebrew 的 `python3.14`，项目在 3.14 下开发验证）。
+## 4. 快速上手（新 Hermes 接管，约 15 分钟）
 
 ```bash
-# 测试（unittest 需要 PYTHONPATH=src；或安装 pytest 后直接跑，pyproject 已配好 src 路径）
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-# 或：
-# python3 -m pip install pytest && python3 -m pytest
+# 1) 克隆（私库，需要授权）
+git clone git@github.com:<owner>/ai-trading-desk.git
+cd ai-trading-desk
 
-# 模拟运行（脚本内已自行处理 src 路径）
-python3 examples/run_simulation.py
+# 2) 配置测试网凭证（值绝不进代码/Git）
+#    在 https://testnet.binance.vision 用 GitHub 登录生成
+export BINANCE_TESTNET_API_KEY='...'
+export BINANCE_TESTNET_API_SECRET='...'
+#    建议追加到 ~/.zshrc 本机持久化
 
-# 30 天运行循环（常驻：采集行情→指标→市场状态→风控→账本→事件检测）
-python3 scripts/runner.py --interval 15
+# 3) 一键启动（幂等）
+./start.sh                # runner（15分钟一轮）+ Dashboard（127.0.0.1:8765）
 
-# 本机 Dashboard（仅 127.0.0.1:8765，无公网端口）
-python3 dashboard_server.py
+# 4) 验证
+PYTHONPATH=src python3 -m unittest discover -s tests -v   # 全量测试
+curl -s http://127.0.0.1:8765/api/status | head -c 400    # Dashboard API
 
-# 经营报告 / 异常看门狗（cron 已配置：每日9点报告 + 每30分钟看门狗 → Telegram）
-python3 scripts/trading_report.py
+# 5) 建立定时任务（Hermes cron，按需）
+#    - 每日经营报告 → Telegram
+#    - 异常看门狗（每30分钟）
+#    - Hermes 交易假设介入（每日 10:00/22:00）
 ```
 
-## 模块结构
+> **完整交接流程见 [ONBOARDING.md](ONBOARDING.md)**（新 Hermes 第一入口）。
+
+## 5. 员工组织（17 岗位，全部"待命 + 平时主动履职"）
+
+| 岗位 | 平时主动做什么 | 调度入口 |
+|------|--------------|---------|
+| CEO / 总交易代理 | 每日 10/22 点研究+决策介入，重大事件立即处理 | cron / 手动 |
+| 风险官 / 风控引擎 | 每轮检查连亏/回撤/熔断 | runner 自动 |
+| 执行交易员 / 交易所适配器 | 订单经风控后执行（Binance/Hyperliquid） | runner/决策触发 |
+| 审计员 / 本地账本 | 审计与账本持续写入 | runner 自动 |
+| 数据工程师 / 数据质量官 | K线采集落盘 | runner 自动 |
+| 技术分析员 | RSI/ATR/EMA/量比计算 | runner 自动 |
+| 市场状态官 | 趋势/震荡/流动性判定 | runner 自动 |
+| API与应急响应官 | 看门狗 30 分钟巡检 | cron 自动 |
+| 经营报告员 | 每日 09:00 经营报告 | cron 自动 |
+| 成本与资源管理员 | Token 用量登记、成本监控 | 持续 |
+| 宏观与新闻研究员 | 每日扫描新闻、事件分级(A/B/C)落盘 | CEO 介入时 |
+| 策略研究员 | 每轮出信号 + 绩效归因 + 权重自适应 | runner 自动 |
+| 组合经理 / 持仓经理 | 每轮净值/持仓/回撤核算 | runner 自动 |
+| 链上数据分析员 | 链上信号记录/回放 | CEO 介入时 |
+| 聪明钱包研究员 | 钱包共识置信度 | CEO 介入时 |
+| 情绪与传播研究员 | 资金费率/情绪状态更新 | runner 自动 |
+| 事件交易员 | 活跃事件五阶段跟踪 | runner 自动 |
+
+**调度器**：`python3 scripts/agent_dispatch.py 策略研究员`（点名）、`--all-deterministic`（全员出动）。
+
+## 6. 硬风控（程序强制）
+
+| 规则 | 阈值 | 动作 |
+|------|------|------|
+| 连续亏损 | ≥5 笔 | 暂停新仓（只允许减仓/平仓） |
+| 回撤 | ≥15% | 停止自动开仓 |
+| 回撤 | ≥25% | 全平模式 |
+| 单笔风险 | \|现价−止损\|×数量 > 现金×1% | 拒绝 |
+| 禁止 | — | 马丁格尔 / 亏损加仓 / 满仓 / 取消硬止损 |
+| 熔断 | 触发 | SELL/HOLD 放行、BUY 冻结 |
+
+## 7. 运行形态（30 天模拟盘）
+
+- **每 15 分钟**：runner 常驻循环，全员主动履职（确定性计算，零 Token 成本）；
+- **每日 2 次**：Hermes 亲自研究（新闻/链上）+ 交易假设草拟 + 风控 + 决策，简报发董事会；
+- **每日 09:00**：经营报告（净值/持仓/盈亏/风控/Token，区分已验证/推断/拟建设）；
+- **每 30 分钟**：看门狗巡检，异常立即告警（不等待日报）。
+
+## 8. 测试
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v   # 71/71 全绿
+```
+
+覆盖：引擎决策、市场分类器、组合账本、硬风控、Keccak 向量、Hyperliquid 签名、策略库、自适应权重、员工调度。
+
+## 9. 目录与数据文件
 
 ```text
-src/autotrader/
-├── market.py      市场状态分类器（EMA/RSI/ATR/量比）+ 历史K线落盘 SQLite
-├── portfolio.py   本地账本：持仓/现金/已实现与浮动盈亏/净值/最大回撤
-├── risk.py        风控：订单级检查 + 硬边界（连亏暂停/回撤熔断/单笔风险预算）
-├── engine.py      决策引擎（CEO假设→风控→模拟执行→审计）
-├── llm.py         Hermes 集成层：register_thesis（草拟校验）/ record_usage（Token登记）/ 确定性降级
-├── binance_testnet.py  Binance Spot Testnet 适配器（只连测试网）
-├── team.py        Agent 员工组织（静态花名册）
-└── models.py      数据模型
+artifacts/          运行时产物（本地主记录，不提交 Git）
+├─ audit.jsonl        决策审计（CEO 交易假设 + 风控结论）
+├─ orders.jsonl       订单账本（主记录）
+├─ state.json         最新市场/组合/风控/员工工作状态（Dashboard 数据源）
+├─ signals.jsonl      策略信号历史
+├─ strategy_weights.json  策略自适应权重表
+├─ sentiment.json     情绪状态
+├─ events.jsonl       事件记录
+├─ onchain.jsonl      链上信号
+├─ market.db          K线历史（SQLite）
+└─ token_usage.json   本项目 Token 用量
 ```
+
+## 10. 不可违反边界（违反即失职）
+
+1. 绝不连接正式交易所（除非 `LIVE_TRADING_ENABLED=1` 且董事会授权）；
+2. 不保存/打印/提交任何 API Key、Secret、钱包私钥；
+3. 董事长观点不自动转订单；
+4. 模型输出必须过独立风控，不得绕过风控下单；
+5. 模拟盘结果不得描述为实盘收益；
+6. 不上云、不开放公网端口；Dashboard 只监听 127.0.0.1；
+7. 测试网数据不代表真实流动性/滑点/情绪；
+8. 实盘仅在 30 天模拟验证通过后，经董事会授权开启。
+
+## 11. 接管检查单（其他 Hermes）
+
+- [ ] 读 [AGENTS.md](AGENTS.md)（本项目行为准则）与 [ONBOARDING.md](ONBOARDING.md)
+- [ ] `git clone` 后 `PYTHONPATH=src python3 -m unittest discover -s tests` 全绿
+- [ ] 配置 Binance 测试网凭证（环境变量，不入库）
+- [ ] `./start.sh` 启动，`curl http://127.0.0.1:8765/api/status` 有数据
+- [ ] 重建 4 个 cron（报告/看门狗/介入×2）
+- [ ] 确认仅监听 127.0.0.1，无公网端口
+- [ ] 前 30 天只跑模拟盘，验证通过后申请实盘授权
+
+---
+
+*治理规则全文与实施进展见内部知识库研讨纪要（不在本仓库）。*
+*本项目零第三方运行时依赖（stdlib only）；`cryptography` 为可选依赖（仅 Hyperliquid 签名）。*
