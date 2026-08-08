@@ -36,15 +36,20 @@ def now_iso() -> str:
 
 def record_signal_result(*, strategy: str, symbol: str, pnl: float,
                          closed_at: str | None = None,
-                         timeframe: str = "15m") -> dict[str, Any]:
+                         timeframe: str = "15m",
+                         side: str | None = None) -> dict[str, Any]:
     """平仓后按策略归因记录一笔结果。pnl 为该笔交易已实现盈亏（USDT）。
-    timeframe：该笔交易使用的周期（学习引擎按 周期×策略 归因）。"""
+
+    timeframe：该笔交易使用的周期（学习引擎按 周期×策略 归因）；
+    side：long/short（方向归因 → 动态杠杆按方向胜率调整）。
+    """
     record = {
         "time": closed_at or now_iso(),
         "strategy": strategy,
         "symbol": symbol,
         "pnl": round(pnl, 4),
         "timeframe": timeframe,
+        "side": side,
     }
     PERF_PATH.parent.mkdir(parents=True, exist_ok=True)
     with PERF_PATH.open("a", encoding="utf-8") as handle:

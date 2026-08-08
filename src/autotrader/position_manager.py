@@ -60,7 +60,34 @@ def now_cn() -> str:
 # ---------- 持仓读取 ----------
 
 def load_positions() -> dict[str, dict[str, Any]]:
-    """读账本 → 当前持仓（quantity>0）。返回 {SYMBOL: {quantity, avg_cost, cost_basis}}。"""
+    """当前持仓（quantity>0）。
+
+    优先读 positions.json（runner 从 OKX 合约账户同步的真实多空持仓，
+    含 side 方向）；文件缺失/为空时回退账本聚合（测试与兜底路径）。
+    返回 {SYMBOL: {quantity, avg_cost, cost_basis, side?}}。
+    """
+    try:
+        if POSITIONS_PATH.exists():
+            data = json.loads(POSITIONS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                # 兼容旧格式 {"positions": {...}} 与新格式 {SYMBOL: {...}}
+                pos_data = data.get("positions", data) if isinstance(data.get("positions"), dict) else data
+                out = {}
+                for sym, p in pos_data.items():
+                    if not isinstance(p, dict):
+                        continue
+                    qty = float(p.get("quantity", 0) or 0)
+                    if qty > 0:
+                        out[sym] = {
+                            "quantity": qty,
+                            "avg_cost": float(p.get("avg_cost", 0) or 0),
+                            "cost_basis": float(p.get("cost_basis", 0) or 0),
+                            "side": p.get("side", "long"),
+                        }
+                if out:
+                    return out
+    except (OSError, ValueError, TypeError):
+        pass
     from autotrader.portfolio import load_orders, open_positions
     orders = load_orders(ORDERS_PATH) if ORDERS_PATH.exists() else []
     poss = open_positions(orders)
@@ -197,33 +224,46 @@ def manage(client: Any, signals: list[dict[str, Any]] | None = None,
             continue
         cost = float(pos["avg_cost"])
         qty = float(pos["quantity"])
-        pnl_pct = (price / cost - 1) * 100 if cost else 0.0
+        side = pos.get("side", "long")          # 持仓方向（合约多空）
+        close_side = "SELL" if side == "long" else "BUY"  # 平仓方向
+        # 盈亏方向：多头 (price/cost-1)，空头 (1-price/cost)
+        pnl_pct = ((price / cost - 1) if side == "long" else (1 - price / cost)) * 100 if cost else 0.0
         levels = levels_for(symbol)
 
         # 1) 止损（硬风控优先）
         if pnl_pct <= -levels["stop_loss_pct"]:
-            result = _execute(client, symbol, "SELL", qty,
-                              f"止损平仓（浮亏 {pnl_pct:.2f}% ≤ -{levels['stop_loss_pct']}%）",
-                              fallback_client)
+            result = _execute(client, symbol, close_side, qty,
+                              f"止损平{side}（浮亏 {pnl_pct:.2f}% ≤ -{levels['stop_loss_pct']}%）",
+                              fallback_client, contract=True, pos_side=side)
+            if result.get("ok"):
+                _record_close_pnl(symbol, side, qty, float(result.get("fill_price") or price), cost, "止损")
             actions.append(result)
             continue
         # 2) 止盈
         if pnl_pct >= levels["take_profit_pct"]:
-            result = _execute(client, symbol, "SELL", qty,
-                              f"止盈平仓（浮盈 {pnl_pct:.2f}% ≥ {levels['take_profit_pct']}%）",
-                              fallback_client)
+            result = _execute(client, symbol, close_side, qty,
+                              f"止盈平{side}（浮盈 {pnl_pct:.2f}% ≥ {levels['take_profit_pct']}%）",
+                              fallback_client, contract=True, pos_side=side)
+            if result.get("ok"):
+                _record_close_pnl(symbol, side, qty, float(result.get("fill_price") or price), cost, "止盈")
             actions.append(result)
             continue
-        # 3) 信号翻转（多头持仓 + sell 信号 → 平仓）
+        # 3) 信号翻转（long+sell / short+buy → 平仓）
         sig = sig_by_symbol.get(symbol) or sig_by_symbol.get(symbol.replace("USDT", ""))
-        if sig and str(sig.get("action", "")).lower() == "sell":
-            result = _execute(client, symbol, "SELL", qty,
-                              f"信号翻转平仓（{sig.get('strategy', '')}: {sig.get('reason', '')[:50]}）",
-                              fallback_client)
+        flip = (side == "long" and sig and str(sig.get("action", "")).lower() == "sell") or \
+               (side == "short" and sig and str(sig.get("action", "")).lower() == "buy")
+        if flip:
+            result = _execute(client, symbol, close_side, qty,
+                              f"信号翻转平{side}（{sig.get('strategy', '')}: {sig.get('reason', '')[:50]}）",
+                              fallback_client, contract=True, pos_side=side)
+            if result.get("ok"):
+                _record_close_pnl(symbol, side, qty, float(result.get("fill_price") or price), cost, "信号翻转")
             actions.append(result)
             continue
         # 4) 同向信号 → 加仓（风控预算内：单笔风险 ≤ 现金 1%，最多加 1 次）
-        if sig and str(sig.get("action", "")).lower() == "buy":
+        same = (side == "long" and sig and str(sig.get("action", "")).lower() == "buy") or \
+               (side == "short" and sig and str(sig.get("action", "")).lower() == "sell")
+        if same:
             from autotrader.portfolio import cash_balance, load_orders
             orders = load_orders(ORDERS_PATH) if ORDERS_PATH.exists() else []
             cash = cash_balance(orders)
@@ -242,6 +282,29 @@ def manage(client: Any, signals: list[dict[str, Any]] | None = None,
 
 # ---------- 紧急止损（guardian 每 tick 调用，秒级响应） ----------
 
+def _record_close_pnl(symbol: str, side: str, qty: float, fill_price: float,
+                      cost: float, reason: str) -> None:
+    """平仓归因：已实现盈亏按策略+方向记录（学习引擎/动态杠杆数据源）。
+
+    策略名从最近 open_position 审计记录提取；亏损 5 笔自动降权由 update_weights 处理。
+    """
+    try:
+        from autotrader.strategy_tracker import record_signal_result
+        pnl = (qty * (fill_price - cost)) if side == "long" else (qty * (cost - fill_price))
+        strategy = "?"
+        try:
+            for line in reversed(AUDIT_PATH.read_text(encoding="utf-8").splitlines()):
+                rec = json.loads(line)
+                if rec.get("type") == "open_position" and rec.get("symbol") == symbol:
+                    strategy = rec.get("signal", "?")
+                    break
+        except Exception:
+            pass
+        record_signal_result(strategy=strategy, symbol=symbol, pnl=pnl, side=side)
+    except Exception:
+        pass
+
+
 def emergency_stop_loss(client: Any, prices: dict[str, float] | None = None,
                         fallback_client: Any = None) -> dict[str, Any]:
     """持仓浮亏超止损线 → 立即市价平仓（不等 15 分钟轮次）。
@@ -256,12 +319,14 @@ def emergency_stop_loss(client: Any, prices: dict[str, float] | None = None,
             continue
         cost = float(pos["avg_cost"])
         qty = float(pos["quantity"])
-        pnl_pct = (price / cost - 1) * 100 if cost else 0.0
+        side = pos.get("side", "long")
+        close_side = "SELL" if side == "long" else "BUY"
+        pnl_pct = ((price / cost - 1) if side == "long" else (1 - price / cost)) * 100 if cost else 0.0
         levels = levels_for(symbol)
         if pnl_pct <= -levels["stop_loss_pct"]:
-            executed.append(_execute(client, symbol, "SELL", qty,
-                                     f"紧急止损（30s 粒度浮亏 {pnl_pct:.2f}%，立即平仓）",
-                                     fallback_client))
+            executed.append(_execute(client, symbol, close_side, qty,
+                                     f"紧急止损（30s 粒度浮亏 {pnl_pct:.2f}%，平{side}）",
+                                     fallback_client, contract=True, pos_side=side))
     return {"executed": executed, "count": len(executed)}
 
 
@@ -309,9 +374,10 @@ def _dedup_ok(symbol: str, side: str) -> bool:
 
 
 def _execute(client: Any, symbol: str, side: str, qty: float, reason: str,
-             fallback_client: Any = None) -> dict[str, Any]:
-    """统一执行：风控闸门 → 防重 → 测试网下单（主客户端失败自动切兜底链）→ 账本 → 审计。"""
-    # 熔断强制（SELL 放行、BUY 冻结）
+             fallback_client: Any = None,
+             contract: bool = False, pos_side: str | None = None) -> dict[str, Any]:
+    """统一执行：风控闸门 → 防重 → 下单（合约多空双向；主客户端失败自动切兜底链）→ 账本 → 审计。"""
+    # 熔断强制（SELL 放行、BUY 冻结；合约平仓方向受同规则保护）
     gate = _risk_gate(symbol, side)
     if not gate["ok"]:
         return {"symbol": symbol, "action": f"{side}_blocked", "reason": reason,
@@ -323,9 +389,10 @@ def _execute(client: Any, symbol: str, side: str, qty: float, reason: str,
     order = None
     order_err = ""
     try:
-        # 真实下单（create_order 走真实成交；数量统一传 float，适配器内部格式化）
+        # 真实下单（合约：cross 保证金 + posSide 双向；现货兜底原逻辑）
         order = client.create_order(symbol=symbol, side=side,
-                                    quantity=round(qty, 6))
+                                    quantity=round(qty, 6),
+                                    contract=contract, pos_side=pos_side)
     except Exception as exc:
         order_err = str(exc)[:100]
         # 主客户端故障 → 兜底链逐个尝试（如 [OKX Demo, Hyperliquid]）
@@ -361,6 +428,7 @@ def _execute(client: Any, symbol: str, side: str, qty: float, reason: str,
         entry = {
             "type": "testnet_order", "order_id": order.get("orderId") or order.get("order_id"),
             "symbol": symbol, "side": side, "order_type": "MARKET",
+            "contract": contract, "pos_side": pos_side,
             "status": order.get("status") or "FILLED",
             "price": order.get("price", "0"), "avg_fill_price": order.get("avgFillPrice")
             or order.get("avg_fill_price"), "quantity": str(round(qty, 8)),
@@ -378,7 +446,8 @@ def _execute(client: Any, symbol: str, side: str, qty: float, reason: str,
                 "reason": reason, "order_id": entry["order_id"],
             }, ensure_ascii=False) + "\n")
         return {"symbol": symbol, "action": f"{side}_executed", "quantity": round(qty, 8),
-                "reason": reason, "order_id": entry["order_id"], "ok": True}
+                "reason": reason, "order_id": entry["order_id"],
+                "fill_price": entry.get("avg_fill_price"), "ok": True}
     except Exception as exc:
         return {"symbol": symbol, "action": f"{side}_failed", "reason": reason,
                 "error": str(exc)[:120], "ok": False}
@@ -397,32 +466,40 @@ def open_position(client: Any, symbol: str, signal: dict[str, Any],
                   events: list[dict[str, Any]] | None = None,
                   fallback_client: Any = None,
                   cash: float | None = None,
-                  max_notional: float | None = None) -> dict[str, Any]:
-    """开仓引擎：信号 → 风控闸门 → 仓位计算 → 下单 → 账本审计。
+                  max_notional: float | None = None,
+                  market: dict[str, Any] | None = None,
+                  strategy_winrate: float | None = None,
+                  drawdown_pct: float | None = None,
+                  consecutive_losses: int | None = None) -> dict[str, Any]:
+    """开仓引擎（多空双向 · USDT 本位永续）：信号 → 风控闸门 → 动态杠杆 → 仓位 → 下单 → 审计。
 
-    风控闸门（全部强制）：
-    - 熔断/连亏（_risk_gate）
-    - 已有持仓 → 不重复开仓（交给 manage 加仓逻辑）
-    - 持仓数 ≥ MAX_POSITIONS → 拒绝（分散风险）
-    - 信号强度 < 0.5 → 拒绝（弱信号不开仓）
-    - 价格新鲜度（_latest_price 已校验）
-
-    仓位计算：单笔风险预算 = 现金 × 1% ÷ 止损距离(%)；
-    上限 = min(现金 × MAX_POSITION_PCT, 可用现金 × 30% 名义金额)；下限 = MIN_TRADE_USDT。
-    cash 参数：外部资金基准（如 OKX 模拟盘总权益）；未传时用本地账本现金。
-    max_notional：可用下单名义金额上限（如 OKX USDT 可用余额 × 30%）。
+    - action=buy → 开多（合约 long）；action=sell → 开空（合约 short）
+    - 杠杆 = 动态引擎（波动率/顺势/强度/胜率/回撤/连亏，clamp [1, 5]x）
+    - 风控闸门（全部强制）：
+      - 熔断/连亏（_risk_gate）
+      - 同方向已有持仓 → 不重复开仓
+      - 持仓数 ≥ MAX_POSITIONS → 拒绝
+      - 信号强度 < 0.5 → 拒绝
+      - 价格新鲜度（_latest_price 已校验）
+    - 仓位：单笔风险预算 = 现金 × 1% ÷ 止损距离；上限 = min(现金×20%, 可用×30%)
     """
-    if str(signal.get("action", "")).lower() != "buy":
-        return {"symbol": symbol, "action": "no_open", "reason": "非买入信号", "ok": False}
+    action = str(signal.get("action", "")).lower()
+    if action not in ("buy", "sell"):
+        return {"symbol": symbol, "action": "no_open", "reason": f"不支持的方向信号: {action}", "ok": False}
+    pos_side = "long" if action == "buy" else "short"
+    exec_side = "BUY" if action == "buy" else "SELL"
     strength = float(signal.get("strength", 0) or 0)
     if strength < 0.5:
         return {"symbol": symbol, "action": "no_open",
                 "reason": f"信号强度 {strength:.2f} < 0.5（弱信号不开仓）", "ok": False}
-    # 已有持仓 → 不重复开仓
+    # 已有同方向持仓 → 不重复开仓
     positions = load_positions()
-    if symbol in positions and positions[symbol]["quantity"] > 0:
-        return {"symbol": symbol, "action": "no_open",
-                "reason": f"已持有 {symbol}，不重复开仓（调仓由 manage 处理）", "ok": False}
+    held = positions.get(symbol)
+    if held and held.get("quantity", 0) > 0:
+        held_side = held.get("side", "long")
+        if held_side == pos_side:
+            return {"symbol": symbol, "action": "no_open",
+                    "reason": f"已持有 {symbol} {held_side}，不重复开仓（调仓由 manage 处理）", "ok": False}
     if len(positions) >= MAX_POSITIONS:
         return {"symbol": symbol, "action": "no_open",
                 "reason": f"持仓数 {len(positions)} ≥ {MAX_POSITIONS}（分散风险限制）", "ok": False}
@@ -447,19 +524,39 @@ def open_position(client: Any, symbol: str, signal: dict[str, Any],
     if qty * px < MIN_TRADE_USDT:
         return {"symbol": symbol, "action": "no_open",
                 "reason": f"开仓金额 {qty * px:.2f} < {MIN_TRADE_USDT} USDT（过小）", "ok": False}
-    result = _execute(client, symbol, "BUY", qty,
-                      f"开仓（{signal.get('strategy', '')} 强度{strength:.2f}，"
-                      f"风险预算 {risk_budget:.2f} USDT @ 止损 {stop_dist_pct}%）",
-                      fallback_client)
+    # 动态杠杆（专业交易员多因子：波动率/顺势/强度/胜率/防守）
+    from autotrader.leverage import compute_leverage
+    market = market or {}
+    lever = compute_leverage(
+        action=action,
+        trend=str(market.get("trend", "sideways")),
+        atr_pct=market.get("atr_pct"),
+        strength=strength,
+        strategy_winrate=strategy_winrate,
+        drawdown_pct=drawdown_pct,
+        consecutive_losses=consecutive_losses,
+    )
+    # 设置合约杠杆 + 下单（USDT 本位永续，多空双向）
+    try:
+        if hasattr(client, "set_leverage"):
+            client.set_leverage(symbol, int(round(lever)) if lever >= 3 else lever)
+    except Exception:
+        pass  # 杠杆设置失败不阻断（沿用账户现有杠杆）
+    result = _execute(client, symbol, exec_side, qty,
+                      f"开{pos_side}（{signal.get('strategy', '')} 强度{strength:.2f}，"
+                      f"风险预算 {risk_budget:.2f} USDT @ 止损 {stop_dist_pct}%，杠杆 {lever}x）",
+                      fallback_client, contract=True, pos_side=pos_side)
     if result.get("ok"):
         # 审计开仓决策（交易假设）
         with AUDIT_PATH.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({
                 "ts": now_cn(), "type": "open_position",
                 "symbol": symbol, "signal": signal.get("strategy", ""),
-                "strength": strength, "quantity": round(qty, 8),
-                "price": round(px, 4), "stop_loss_pct": stop_dist_pct,
+                "side": pos_side, "strength": strength,
+                "quantity": round(qty, 8), "price": round(px, 4),
+                "stop_loss_pct": stop_dist_pct,
                 "risk_budget": round(risk_budget, 2),
+                "leverage": lever,
                 "reason": signal.get("reason", "")[:200],
             }, ensure_ascii=False) + "\n")
     return result

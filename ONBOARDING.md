@@ -60,7 +60,7 @@ export LIVE_TRADING_ENABLED=1
 ## 3.1 交易所适配器与执行兜底链
 
 统一接口 `ExchangeAdapter`（src/autotrader/exchange.py）：行情/账户/下单/撤单/订单状态。
-- **OkxDemoAdapter**（主通道）：OKX Demo Trading，HMAC-SHA256 base64 签名，市价买单按金额（tgtCcy=quote_ccy），纯标准库
+- **OkxDemoAdapter**（主通道）：OKX Demo Trading（现货+USDT 本位永续），HMAC-SHA256 base64 签名，市价买单按金额（tgtCcy=quote_ccy），合约多空双向（posSide）+ 动态杠杆，纯标准库
 - **BinanceAdapter / BinanceSpotTestnet**：测试网（默认）/实盘双模式，第一兜底
 - **HyperliquidAdapter**：第二兜底（测试网需官方界面激活，EIP-712 签名见 hl_crypto.py）
 

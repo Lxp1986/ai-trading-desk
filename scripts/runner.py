@@ -344,6 +344,31 @@ def run_once(client, prev_state: dict,
     except Exception as exc:
         log(f"⚠️ 学习引擎失败: {exc}")
 
+    # 合约持仓同步（OKX 真实多空持仓 → positions.json，供调仓/止损/看板使用）
+    try:
+        if account_client is not None and hasattr(account_client, "contract_positions"):
+            cps = account_client.contract_positions()
+            synced = {}
+            for cp in cps:
+                sym = cp["symbol"]
+                synced[sym] = {
+                    "quantity": cp["quantity"],
+                    "avg_cost": cp["avg_cost"],
+                    "cost_basis": cp["quantity"] * cp["avg_cost"],
+                    "side": cp["side"],
+                    "mark_price": cp.get("mark_price", 0),
+                    "unrealized_pnl": cp.get("unrealized_pnl", 0),
+                    "liq_price": cp.get("liq_price", 0),
+                }
+            if synced or not POSITIONS_PATH.exists():
+                POSITIONS_PATH.write_text(
+                    json.dumps(synced, ensure_ascii=False, indent=2), encoding="utf-8")
+                if synced:
+                    parts = [f"{s}({p['side']} {p['quantity']})" for s, p in synced.items()]
+                    log(f"📡 合约持仓同步: {', '.join(parts)}")
+    except Exception as exc:
+        log(f"⚠️ 合约持仓同步失败: {exc}")
+
     # 主动调仓（持仓实时管理：止盈/信号翻转/同向加仓；止损由 guardian 30s 兜底）
     try:
         from autotrader.position_manager import manage
@@ -356,20 +381,42 @@ def run_once(client, prev_state: dict,
     except Exception as exc:
         log(f"⚠️ 主动调仓失败: {exc}")
 
-    # 开仓引擎（信号 → 开仓：机会榜最强 buy 信号，风控闸门强制；补齐执行闭环）
+    # 开仓引擎（多空双向：buy 开多 / sell 开空；信号 → 风控 → 动态杠杆 → 合约执行）
     try:
         from autotrader.position_manager import open_position
         opps = opportunities.get("opportunities", []) if isinstance(opportunities, dict) else []
-        buys = [o for o in opps
-                if (o.get("best") or {}).get("action") == "buy"
+        acts = [o for o in opps
+                if (o.get("best") or {}).get("action") in ("buy", "sell")
                 and (o.get("best") or {}).get("strength", 0) >= 0.5]
-        if buys:
-            top = max(buys, key=lambda o: (o["best"] or {}).get("strength", 0))
+        if acts:
+            top = max(acts, key=lambda o: (o["best"] or {}).get("strength", 0))
             sym = top["symbol"]
+            sig = top["best"]
             px = (prices or {}).get(sym)
-            opened = open_position(client, sym, top["best"], px,
+            # 市场上下文（趋势/波动率 → 动态杠杆）
+            market_ctx: dict = {"trend": snapshot.trend if hasattr(snapshot, "trend") else "sideways"}
+            try:
+                ind = indicators if isinstance(indicators, dict) else {}
+                if ind.get("atr") and ind.get("price"):
+                    market_ctx["atr_pct"] = float(ind["atr"]) / float(ind["price"]) * 100
+            except Exception:
+                pass
+            # 策略历史胜率（学习反馈 → 杠杆因子）
+            winrate = None
+            try:
+                from autotrader.strategy_tracker import load_perf
+                perf = [p for p in load_perf(strategy=sig.get("strategy", ""))
+                        if p.get("pnl") is not None]
+                if perf:
+                    winrate = sum(1 for p in perf if float(p["pnl"]) > 0) / len(perf)
+            except Exception:
+                winrate = None
+            opened = open_position(client, sym, sig, px,
                                    fallback_client=fallback_exec_clients or fallback_client,
-                                   cash=base_cash, max_notional=max_notional)
+                                   cash=base_cash, max_notional=max_notional,
+                                   market=market_ctx, strategy_winrate=winrate,
+                                   drawdown_pct=risk_state.drawdown_pct,
+                                   consecutive_losses=risk_state.consecutive_losses)
             if opened.get("ok"):
                 log(f"🟢 开仓: {sym} {opened['quantity']}（{opened['reason']}）")
             elif opened.get("action") != "no_open":

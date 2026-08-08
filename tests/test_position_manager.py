@@ -16,9 +16,10 @@ class _FakeClient:
     def __init__(self):
         self.orders: list[dict] = []
 
-    def create_order(self, *, symbol, side, quantity):
+    def create_order(self, *, symbol, side, quantity, contract=False, pos_side=None):
         order = {"orderId": len(self.orders) + 1, "symbol": symbol, "side": side,
-                 "status": "FILLED", "avgFillPrice": 64000.0, "quantity": quantity}
+                 "status": "FILLED", "avgFillPrice": 64000.0, "quantity": quantity,
+                 "contract": contract, "pos_side": pos_side}
         self.orders.append(order)
         return order
 
@@ -174,7 +175,7 @@ class PositionManagerTest(unittest.TestCase):
         pm._LAST_ORDERS.clear()
 
     def test_open_position_gates(self):
-        """开仓引擎：弱信号拒绝 / 已有持仓拒绝 / 非买信号拒绝。"""
+        """开仓引擎：弱信号拒绝 / 已有持仓拒绝 / 非法方向拒绝 / sell 开空。"""
         pm._LAST_ORDERS.clear()
         self._write_orders([])  # 零持仓、现金 277
         # 弱信号
@@ -182,16 +183,22 @@ class PositionManagerTest(unittest.TestCase):
         r = pm.open_position(self.client, "ETHUSDT", weak, 1800.0)
         self.assertFalse(r["ok"])
         self.assertIn("弱信号", r["reason"])
-        # 非 buy 信号
-        r = pm.open_position(self.client, "ETHUSDT", {"action": "sell", "strength": 0.8},
+        # 非法方向（hold）拒绝
+        r = pm.open_position(self.client, "ETHUSDT", {"action": "hold", "strength": 0.8},
                              1800.0)
         self.assertFalse(r["ok"])
-        # 正常开仓：现金 277 → 风险预算 2.77 → risk_qty = 2.77/(1800*0.03)=0.0513；
+        # sell 信号 → 合约开空（多空双向）
+        pm.levels_for = lambda symbol, atr_pct=None: {"stop_loss_pct": 3.0,
+                                                      "take_profit_pct": 6.0}
+        r = pm.open_position(self.client, "ETHUSDT", {"action": "sell", "strength": 0.8},
+                             1800.0, cash=1000.0)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["action"], "SELL_executed")
+        self.assertEqual(self.client.orders[-1]["pos_side"], "short")
+        # 正常开多：现金 277 → 风险预算 2.77 → risk_qty = 2.77/(1800*0.03)=0.0513；
         # 集中度上限 = 277*20%/1800 = 0.0308（cap 生效，单标的 ≤20% 现金）
         ok = {"action": "buy", "strength": 0.8, "strategy": "range_reversion",
               "reason": "震荡超卖低吸"}
-        pm.levels_for = lambda symbol, atr_pct=None: {"stop_loss_pct": 3.0,
-                                                      "take_profit_pct": 6.0}
         r = pm.open_position(self.client, "ETHUSDT", ok, 1800.0)
         self.assertTrue(r["ok"])
         self.assertEqual(r["action"], "BUY_executed")

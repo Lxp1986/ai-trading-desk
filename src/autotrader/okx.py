@@ -36,6 +36,11 @@ def _to_okx(symbol: str) -> str:
     return symbol.replace("/", "").replace("USDT", "-USDT")
 
 
+def _to_okx_swap(symbol: str) -> str:
+    """USDT 本位永续合约 instId：BTCUSDT → BTC-USDT-SWAP。"""
+    return symbol.replace("/", "").replace("USDT", "-USDT-SWAP")
+
+
 def _from_okx(inst_id: str) -> str:
     return inst_id.replace("-", "")
 
@@ -54,6 +59,7 @@ class OkxDemoAdapter(ExchangeAdapter):
         self.passphrase_env = passphrase_env
         self.timeout_seconds = timeout_seconds
         self.is_live = False  # Demo Trading 永远非实盘
+        self._lot_cache: dict[str, float] = {}
 
     @property
     def base_url(self) -> str:
@@ -125,9 +131,10 @@ class OkxDemoAdapter(ExchangeAdapter):
 
     # ---------- 行情（公开，无需签名） ----------
 
-    def ticker_price(self, symbol: str) -> dict[str, Any]:
+    def ticker_price(self, symbol: str, contract: bool = False) -> dict[str, Any]:
         result = self._request("GET", "/api/v5/market/ticker",
-                               {"instId": _to_okx(symbol)}, public=True)
+                               {"instId": _to_okx_swap(symbol) if contract else _to_okx(symbol)},
+                               public=True)
         data = result.get("data", [])
         if not data:
             raise ExchangeError(f"OKX ticker empty: {symbol}")
@@ -199,16 +206,89 @@ class OkxDemoAdapter(ExchangeAdapter):
 
     # ---------- 订单 ----------
 
+    def _lot_size(self, symbol: str) -> float:
+        """合约 lot size（最小下单数量，缓存；BTC/ETH-USDT-SWAP 均为 0.01）。"""
+        if symbol not in self._lot_cache:
+            inst_id = _to_okx_swap(symbol)
+            result = self._request("GET", "/api/v5/public/instruments",
+                                   {"instType": "SWAP", "instId": inst_id}, public=True)
+            data = result.get("data", [])
+            self._lot_cache[symbol] = float(data[0].get("lotSz", 0.01)) if data else 0.01
+        return self._lot_cache[symbol]
+
+    def set_leverage(self, symbol: str, lever: int, mgn_mode: str = "cross") -> dict[str, Any]:
+        """设置 USDT 本位永续杠杆（long/short 双向统一）。"""
+        inst_id = _to_okx_swap(symbol)
+        result = self._request("POST", "/api/v5/account/set-leverage", body={
+            "instId": inst_id, "lever": str(lever), "mgnMode": mgn_mode,
+        }, signed=True)
+        return {"ok": True, "raw": result}
+
+    def contract_position(self, symbol: str) -> dict[str, Any] | None:
+        """合约持仓查询（net 模式：pos>0 多头 / pos<0 空头；双向模式按 posSide）。"""
+        inst_id = _to_okx_swap(symbol)
+        result = self._request("GET", "/api/v5/account/positions",
+                               {"instId": inst_id}, signed=True)
+        for p in result.get("data", []):
+            pos = float(p.get("pos", 0) or 0)
+            if abs(pos) > 0:
+                side = p.get("posSide") or ("long" if pos > 0 else "short")
+                return {
+                    "symbol": symbol, "instId": inst_id,
+                    "side": side,
+                    "quantity": abs(pos),
+                    "avg_cost": float(p.get("avgPx", 0) or 0),
+                    "mark_price": float(p.get("markPx", 0) or 0),
+                    "unrealized_pnl": float(p.get("upl", 0) or 0),
+                    "liq_price": float(p.get("liqPx", 0) or 0),
+                    "leverage": float(p.get("lever", 0) or 0),
+                    "margin_mode": p.get("mgnMode", ""),
+                }
+        return None
+
+    def contract_positions(self) -> list[dict[str, Any]]:
+        """全部合约持仓。"""
+        result = self._request("GET", "/api/v5/account/positions", signed=True)
+        out = []
+        for p in result.get("data", []):
+            pos = float(p.get("pos", 0) or 0)
+            if abs(pos) > 0:
+                side = p.get("posSide") or ("long" if pos > 0 else "short")
+                out.append({
+                    "symbol": _from_okx(p.get("instId", "")).replace("-SWAP", ""),
+                    "instId": p.get("instId"),
+                    "side": side,
+                    "quantity": abs(pos),
+                    "avg_cost": float(p.get("avgPx", 0) or 0),
+                    "mark_price": float(p.get("markPx", 0) or 0),
+                    "unrealized_pnl": float(p.get("upl", 0) or 0),
+                    "liq_price": float(p.get("liqPx", 0) or 0),
+                })
+        return out
+
     def create_order(self, *, symbol: str, side: str, quantity: float,
-                     order_type: str = "MARKET", price: float | None = None) -> OrderResult:
-        inst_id = _to_okx(symbol)
+                     order_type: str = "MARKET", price: float | None = None,
+                     contract: bool = False,
+                     pos_side: str | None = None) -> OrderResult:
+        """下单。contract=True 时为 USDT 本位永续（SWAP，多空双向，cross 保证金）。"""
+        inst_id = _to_okx_swap(symbol) if contract else _to_okx(symbol)
         is_market = order_type.upper() == "MARKET" or price is None
         body: dict[str, Any] = {
-            "instId": inst_id, "tdMode": "cash", "side": side.lower(),
+            "instId": inst_id,
+            "tdMode": "cross" if contract else "cash",
+            "side": side.lower(),
             "ordType": "market" if is_market else "limit",
         }
+        if contract and pos_side:
+            body["posSide"] = pos_side  # long/short（双向持仓模式）
         if is_market:
-            if side.upper() == "BUY":
+            if contract:
+                # 合约市价单 sz 为币数量，须对齐 lot size（BTC/ETH 0.01 起）
+                lot = self._lot_size(symbol)
+                import math
+                sz = max(lot, math.floor(quantity / lot) * lot)
+                body["sz"] = f"{sz:.8f}".rstrip("0").rstrip(".")
+            elif side.upper() == "BUY":
                 # 模拟盘市价买单必须按金额（quote_ccy）；金额 = 数量 × 当前价
                 px = float(self.ticker_price(symbol)["price"])
                 amt = round(quantity * px, 2)

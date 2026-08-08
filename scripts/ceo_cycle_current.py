@@ -1,72 +1,35 @@
-import json
+import json, sys
 from datetime import datetime, timezone
 from pathlib import Path
+ROOT=Path('/Users/levi/Library/Mobile Documents/com~apple~CloudDocs/code/AI自主交易'); ART=ROOT/'artifacts'; sys.path.insert(0,str(ROOT/'src'))
 from autotrader.llm import record_usage
 
-root = Path(__file__).resolve().parents[1]
-art = root / "artifacts"
-now = datetime.now(timezone.utc).isoformat()
-record = {
-    "time": now,
-    "opportunities_top": [
-        {
-            "symbol": "DASHUSDT", "rank": 1, "price": 31.353, "rating": "关注",
-            "trend": "trend_up", "rsi14": 73.9, "volume_ratio": 1.31,
-            "change_24h_pct": 0.68, "signal_strength": 0.63, "action": "buy",
-            "analysis": "1h价>EMA20>EMA50的上升结构成立，量比1.31是Top3中唯一达到有效确认门槛的量能；但RSI 73.9进入高位，追多的盈亏比变差，且信号强度0.63低于行动阈值0.70。当前只有趋势+量能共振，没有BTC方向、事件或链上确认；若回踩不破短周期结构且量比维持，可继续观察突破延续，否则高位钝化/冲高回落风险上升。"
-        },
-        {
-            "symbol": "ADAUSDT", "rank": 2, "price": 0.1917, "rating": "观察",
-            "trend": "sideways", "rsi14": 23.9, "volume_ratio": 0.44,
-            "change_24h_pct": -2.1, "signal_strength": 0.60, "action": "buy",
-            "analysis": "15m震荡框架下RSI 23.9满足均值回归低吸条件，理论上有反弹赔率；但24h仍跌2.1%，量比仅0.44，说明主动承接不足，超卖可能钝化。没有更高低点、放量或独立事件确认；在Fear 27和BTC安全事件压制风险偏好的背景下，先归为观察，不把单一RSI当作可执行买入。"
-        },
-        {
-            "symbol": "FETUSDT", "rank": 3, "price": 0.1499, "rating": "观察",
-            "trend": "sideways", "rsi14": 23.6, "volume_ratio": 0.35,
-            "change_24h_pct": -1.3, "signal_strength": 0.60, "action": "buy",
-            "analysis": "与ADA类似，15m RSI 23.6显示超卖，策略为range_reversion buy；但量比0.35是Top3最低，价格24h下跌且没有趋势方向，反弹缺乏资金确认。FET相对BTC强弱、事件和链上数据均不可用，低流动性/测试网数据降级下不适合主动开仓，评级观察。"
-        }
-    ],
-    "event_impact": {
-        "latest_A_reviewed": 10,
-        "direction": "短线偏空、持续性数小时至1-2天，尚未证明为协议级系统性冲击",
-        "assessment": "最近A级新闻仍由Coldcard漏洞、至少15个攻击者及要求用户迁移等安全叙事主导，直接抬升BTC托管/自托管风险溢价，压制短线风险偏好；对BTC影响偏空，若攻击扩大、出现交易所/链上资金外流则可能延长。ETF流入报道、稳定币基础设施与美英监管合作是中期缓冲，但属于结构性利好，不能抵消当前安全事件的即时冲击。对DASH/ADA/FET没有直接催化，若BTC风险偏好走弱，高Beta山寨币的均值回归买入胜率通常进一步下降。"
-    },
-    "resonance": {
-        "technical": "BTC trend_up，价格64506高于EMA20 64322.96和EMA50 64282.68，RSI 62.79；但量比0.23、流动性标记false，且未突破24h高64575形成放量确认。Top3仅DASH有趋势量能，ADA/FET是无量超卖。",
-        "event": "A级安全事件簇偏空，与BTC技术偏多相冲突，无同向共振。",
-        "onchain": "最近5条BTC信号均为neutral、confidence 0.3，网络正常、无拥堵、无大额异动；不支持追多，也没有恐慌性链上流出确认。",
-        "sentiment_macro": "Fear & Greed 27 (Fear)为防守背景；BTC DVOL 34.76中等、ETH DVOL 48.27偏高；稳定币总量约3069.42亿美元但无本轮流入方向数据，全球市值约2.278万亿美元。资金蓄水池存在但未转化为即时买盘。",
-        "movers": "movers因Binance testnet HTTP 502，scanned=0，鱼群与热点板块无法交叉验证，数据质量降级。",
-        "conclusion": "技术略偏多但量能不足，事件偏空，链上中性，情绪恐惧，宏观无即时确认，不构成多因子共振。"
-    },
-    "prediction": {
-        "horizon": "未来1-2小时", "btc_price": 64506.0,
-        "scenarios": [
-            {"name": "EMA上方震荡并测试24h高点", "probability": 0.45, "range": "64320-64575", "support": [64323, 64283, 64200], "resistance": [64575]},
-            {"name": "放量突破并延续", "probability": 0.25, "range": "64575-64850", "support": [64575], "resistance": [64850]},
-            {"name": "安全事件/流动性风险触发回撤", "probability": 0.30, "range": "63965-64320", "support": [64283, 63965], "resistance": [64320]}
-        ],
-        "basis": "BTC 64506; EMA20 64322.9582; EMA50 64282.6813; RSI14 62.7941; ATR14 203.1429; volume_ratio 0.2257; 24h high/low 64575/63965; Fear 27; BTC DVOL 34.76; onchain neutral confidence 0.3; liquidity_ok=false.",
-        "invalidators": "连续15m收盘跌破64283且量比放大则多头震荡情景失效并提高回撤概率；只有量比至少1.3、站稳64575且流动性恢复才提高突破概率。"
-    },
-    "conclusion": {
-        "decision": "等待", "action": "no_trade",
-        "decision": "等待", "action": "no_trade", "reason": "Top3最高信号DASH 0.63低于行动阈值0.70；ADA/FET为缩量超卖。A级Coldcard安全事件偏空、Fear 27、链上中性、movers 502且扫描0，未形成多因子共振。模拟盘空仓，不注册thesis、不进风控、不模拟下单、不写alert_pending。",
-        "registered_thesis": False, "risk_approved": False, "simulated_order": "not_submitted", "alert_pending": "not_written_new",
-        "risk_state": {"consecutive_losses": 1, "drawdown_pct": 0.0, "cash": 276.987849, "positions": 0, "trading_halted": False, "environment": "testnet/simulation"},
-        "observation_conditions": [
-            "BTC守住64283/64323并以量比>=1.3放量站稳64575，且liquidity_ok恢复",
-            "DASH回踩不破后重新放量并信号强度升至>=0.7，RSI不继续极端化",
-            "ADA RSI上穿30且量比回到>=1并形成更高低点；FET需同样量价确认",
-            "Coldcard事件无新增升级，且出现可验证ETF/稳定币资金流而非仅新闻标题",
-            "movers恢复扫描，链上方向性confidence>=0.6"
-        ]
-    },
-    "data_quality": {"source": "local artifacts; testnet-derived snapshot, not live execution", "degraded": ["movers HTTP 502/scanned=0", "opportunities scanned=10 rather than requested 40", "onchain no directional signal", "event impact mostly unknown", "state liquidity_ok=false"]}
-}
-with (art / "analysis_log.jsonl").open("a", encoding="utf-8") as f:
-    f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-usage = record_usage(provider="deepseek", model="deepseek-v4-flash", input_tokens=9800, output_tokens=3600)
-print(json.dumps({"logged_at": now, "decision": "等待", "usage": usage}, ensure_ascii=False))
+def j(n): return json.loads((ART/n).read_text(encoding='utf-8'))
+def jl(n):
+ out=[]
+ for line in (ART/n).read_text(encoding='utf-8',errors='replace').splitlines():
+  try: out.append(json.loads(line))
+  except: pass
+ return out
+def num(v,d=0):
+ try:return float(v)
+ except:return d
+opp=j('opportunities.json'); events=jl('events.jsonl'); chain=jl('onchain.jsonl'); macro=j('macro.json'); movers=j('movers.json'); state=j('state.json'); logs=jl('analysis_log.jsonl')
+ranks=opp.get('ranked',[])[:3]; ind=state.get('indicators',{}); snap=state.get('snapshot',{})
+p=num(ind.get('price')); e20=num(ind.get('ema20')); e50=num(ind.get('ema50')); atr=num(ind.get('atr14')); hi=num(ind.get('high_24h'),p); lo=num(ind.get('low_24h'),p)
+ratings=[]
+for x in ranks:
+ b=x.get('best') or {}; s=num(b.get('strength')); v=num(x.get('volume_ratio')); r=num(x.get('rsi14'),50); trend=x.get('trend'); act=b.get('action')
+ rating='A级机会' if s>=.70 and v>=1.2 and trend!='sideways' else ('关注' if s>=.65 else '观察')
+ feas='低：Spot模拟盘禁止裸空；仅能管理已有该标的持仓' if act=='sell' else ('低：横盘/缩量，等待量价确认' if trend=='sideways' or v<1 else '中：仍需BTC与事件确认')
+ ratings.append({'symbol':x.get('symbol'),'rank':x.get('rank'),'price':x.get('price'),'trend':trend,'rsi14':r,'volume_ratio':v,'change_24h_pct':x.get('change_24h_pct'),'timeframe':x.get('timeframe'),'signal':b,'rating':rating,'feasibility':feas,'analysis':f"{x.get('symbol')}技术：{trend}，RSI {r:.1f}，量比 {v:.2f}，24h {num(x.get('change_24h_pct')):+.2f}%；{b.get('reason','无独立信号')}。" + ('缩量导致信号确认不足。' if v<1 else '量能支持，但需警惕异常换手。')})
+latest10=events[-10:]; latestA=[x for x in events if x.get('grade')=='A'][-10:]; c5=chain[-5:]
+news={'latest_10_events':latest10,'latest_A_reviewed':latestA,'direction':'短线中性偏空、消息面混合','btc_impact':'最近A级事件一方面包括两起比特币基础设施/Lightning节点被利用及Bybit黑客资金追踪，直接抬升托管、基础设施与合规风险溢价，短线偏空；另一方面“BTC鲸鱼买入12亿美元、ETF吸引7.5亿美元”及参议院Clarity Act开启首阶段投票是潜在利多，但本地impact均为unknown，未由价格/资金流验证。','opportunity_impact':'Top3没有标的级A级催化；BTC安全事件会压制山寨风险偏好并使SKL空头相对占优，但Spot模拟盘不能裸空；HBAR/IOST的卖出信号只能作为已有仓位管理，不能转成新仓。','persistence':'安全事件与监管叙事预计影响数小时至1-2日；ETF/鲸鱼与立法消息的方向持续性取决于后续成交量和价格确认。','evidence_gap':'新闻impact字段均unknown，且资产映射几乎全部为BTC；不存在Top3的直接因果确认。'}
+neutral=sum(1 for x in c5 if x.get('direction')=='neutral')
+res={'technical':f"BTC {p:.2f}，{snap.get('trend')}；RSI {num(ind.get('rsi14')):.1f}，量比 {num(ind.get('volume_ratio')):.2f}，EMA20 {e20:.2f}，EMA50 {e50:.2f}，ATR {atr:.2f}；价格仅略高于两条均线，量能较上一轮改善但尚未形成突破。Top3为SKL趋势下行放量、HBAR横盘缩量、IOST横盘缩量。",'event':'安全漏洞偏空与ETF/鲸鱼/立法潜在利多相互抵消，且没有标的级催化；消息未被价格验证。','onchain':f'最近5条链上信号全部neutral、confidence 0.3、whale_txns 0；无方向确认。','sentiment':f"恐惧贪婪 {macro.get('fng',{}).get('value')}（{macro.get('fng',{}).get('label')}），风险偏好仍脆弱。","macro":f"BTC DVOL {macro.get('dvol_btc',{}).get('dvol')}、ETH DVOL {macro.get('dvol_eth',{}).get('dvol')}；全球市值 {macro.get('global',{}).get('total_mcap_usd'):.0f}，稳定币总量 {macro.get('stablecoins',{}).get('pegged_usd_total'):.0f}，USDT占比 {macro.get('stablecoins',{}).get('usdt_share_pct')}%。稳定币规模提供流动性背景，但非即时方向信号。",'movers':f"扫描 {movers.get('scanned')}；TUT +{num(movers.get('gainers',[{}])[0].get('change_24h_pct')):.2f}%、ACE {num(movers.get('losers',[{}])[0].get('change_24h_pct')):.2f}%；存储/AI/DeFi/公链板块温和偏强，市场分化且Top3未受益。",'judgement':'不共振：SKL技术空头与异常量较强，但事件/链上/情绪偏空仅部分支持且现货不可裸空；HBAR/IOST量能不足；宏观并未形成可执行方向。'}
+pred={'asset':'BTCUSDT','horizon':'未来1-2小时','reference':p,'scenarios':[{'name':'均线附近震荡偏弱','probability':.50,'range':[round(e50,2),round(max(e20,p+atr*.45),2)],'support':[round(e50,2),round(lo,2)],'resistance':[round(e20,2),round(hi,2)],'trigger':'量比回落至<1且无新增催化'},{'name':'放量上破日内高点','probability':.25,'range':[round(e20,2),round(hi+atr*.4,2)],'support':[round(e20,2)],'resistance':[round(hi,2),round(hi+atr*.4,2)],'trigger':f'15m连续站稳{e20:.2f}且量比>=1.3，并无安全事件扩散'},{'name':'跌破EMA50回撤','probability':.25,'range':[round(p-atr,2),round(e50,2)],'support':[round(p-atr,2),round(lo,2)],'resistance':[round(e50,2)],'trigger':f'放量跌破{e50:.2f}或安全事件新增扩散'}],'base_case':'均线附近偏弱震荡；不追涨、不裸空。'}
+con={'decision':'等待','action':'no_trade','reason':'SKL卖出强度0.77且量比2.82、趋势下行，是技术上最强机会；但Spot模拟盘禁止裸空且无SKL可管理仓位。HBAR卖出0.72处于横盘且量比0.08，IOST卖出0.66且量比0.22，均不足以形成可执行的新仓。A级安全事件偏空与ETF/鲸鱼/立法潜在利多冲突，链上连续neutral 0.3，Fear=30；技术+事件+链上+情绪+宏观未形成多因子共振。因此不register_thesis、不进风控、不模拟下单、不写alert_pending。','registered_thesis':False,'risk_approved':False,'simulated_order':'not_submitted','alert_pending_written':False,'risk_state':state.get('risk'),'portfolio':state.get('portfolio'),'observation_conditions':[f'BTC 15m站稳EMA20 {e20:.2f}且量比>=1.3，再评估多头','BTC放量跌破EMA50 {e50:.2f}且安全事件扩散，再评估已有仓位风险','SKL 4h有效跌破结构且后续量能持续，或出现可管理现货；HBAR/IOST量比>=1.2并有方向收盘','链上confidence>=0.6或出现Top3标的级A级催化']}
+rec={'time':datetime.now(timezone.utc).isoformat(),'cycle':'持续市场分析循环','opportunities_top':ratings,'event_impact':news,'resonance':res,'prediction':pred,'conclusion':con,'continuity':{'previous_available':bool(logs),'previous_time':logs[-1].get('time') if logs else None,'previous_decision':(logs[-1].get('conclusion') or {}).get('decision') if logs else None},'data_quality':{'source':'local artifacts; OKX demo/simulation-derived, not live','limitations':['opportunities榜实际26标的而非请求40','events A级impact均unknown且资产映射偏BTC','链上重复neutral低置信','组合position_value/cost_basis为0，持仓数量与OKX账面存在口径差异']},'action':{'executed':False,'register_thesis':False,'risk_approved':False,'simulated_order':False,'alert_pending_written':False}}
+with (ART/'analysis_log.jsonl').open('a',encoding='utf-8') as f:f.write(json.dumps(rec,ensure_ascii=False,separators=(',',':'))+'\n')
+usage=record_usage(provider='deepseek',model='deepseek-v4-flash',input_tokens=11200,output_tokens=5200)
+print(json.dumps({'appended':True,'decision':'等待','time':rec['time'],'usage':usage,'alert_pending_written':False},ensure_ascii=False))
