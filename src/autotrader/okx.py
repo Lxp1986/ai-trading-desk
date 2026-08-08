@@ -216,6 +216,16 @@ class OkxDemoAdapter(ExchangeAdapter):
             self._lot_cache[symbol] = float(data[0].get("lotSz", 0.01)) if data else 0.01
         return self._lot_cache[symbol]
 
+    def funding_rate(self, symbol: str) -> dict[str, Any]:
+        """永续资金费率（每 8h 结算；正费率多头付费、空头收费）。"""
+        result = self._request("GET", "/api/v5/public/funding-rate",
+                               {"instId": _to_okx_swap(symbol)}, public=True)
+        data = result.get("data", [])
+        if not data:
+            return {"symbol": symbol, "funding_rate": 0.0}
+        return {"symbol": symbol, "funding_rate": float(data[0].get("fundingRate", 0) or 0),
+                "next_funding_time": int(data[0].get("nextFundingTime", 0) or 0)}
+
     def set_leverage(self, symbol: str, lever: int, mgn_mode: str = "cross") -> dict[str, Any]:
         """设置 USDT 本位永续杠杆（long/short 双向统一）。"""
         inst_id = _to_okx_swap(symbol)

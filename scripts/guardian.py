@@ -108,6 +108,59 @@ def _fallback_clients():
     return [c for c in (_binance_client(), _hl_client()) if c is not None]
 
 
+def check_liquidation_risk(prices: dict[str, float]) -> None:
+    """合约强平守护（30s 粒度）：反向波动消耗保证金超阈值 → 预警/保护平仓。
+
+    cross 模式下 OKX 不返回有效强平价（liqPx=0/异常），改用保证金消耗近似：
+    反向波动 % ≥ (100/杠杆)×60% → L3 预警；≥ (100/杠杆)×80% → 立即保护平仓。
+    """
+    import json as _json
+    pos_path = Path(__file__).resolve().parents[1] / "artifacts" / "positions.json"
+    try:
+        if not pos_path.exists():
+            return
+        data = _json.loads(pos_path.read_text(encoding="utf-8"))
+        pos_data = data.get("positions", data) if isinstance(data.get("positions"), dict) else data
+        for sym, p in pos_data.items():
+            if not isinstance(p, dict) or float(p.get("quantity", 0) or 0) <= 0:
+                continue
+            price = prices.get(sym)
+            cost = float(p.get("avg_cost", 0) or 0)
+            lever = float(p.get("leverage", 2.0) or 2.0)
+            side = p.get("side", "long")
+            if not price or not cost:
+                continue
+            # 反向波动（多头下跌/空头上涨 = 亏损方向）
+            adverse = ((price / cost - 1) if side == "long" else (1 - price / cost)) * 100
+            if adverse <= 0:
+                continue
+            warn_at = 100.0 / lever * 0.6
+            protect_at = 100.0 / lever * 0.8
+            if adverse >= protect_at:
+                # 保护平仓（不等待止损线——保证金即将耗尽）
+                try:
+                    close_side = "SELL" if side == "long" else "BUY"
+                    res = _order_client().create_order(
+                        symbol=sym, side=close_side, quantity=float(p["quantity"]),
+                        contract=True, pos_side=side)
+                    detail = f"🛡️ 强平保护平仓 {sym} {side}（反向波动 {adverse:.1f}% ≥ {protect_at:.0f}% 保证金警戒线）"
+                    write_event({"type": "liquidation_protection", "level": "L4",
+                                 "detail": detail, "symbol": sym, "at": now_cn()})
+                    raise_alert("action", f"强平保护: {sym} 已平仓（{res.status}）")
+                    log(detail)
+                except Exception as exc:
+                    write_event({"type": "liquidation_protection_failed", "level": "L4",
+                                 "detail": f"🛡️ 强平保护平仓失败 {sym}: {exc}", "symbol": sym, "at": now_cn()})
+                    raise_alert("critical", f"强平保护平仓失败: {sym}（{exc}）")
+            elif adverse >= warn_at:
+                detail = f"⚠️ 强平风险预警 {sym} {side}（反向波动 {adverse:.1f}% ≥ {warn_at:.0f}%，杠杆 {lever}x）"
+                write_event({"type": "liquidation_warning", "level": "L3",
+                             "detail": detail, "symbol": sym, "at": now_cn()})
+                raise_alert("action", f"强平风险: {sym} 保证金消耗 {adverse:.0f}%")
+    except Exception as exc:
+        log(f"⚠️ 强平监控失败: {exc}")
+
+
 def check_price() -> None:
     """L0：实时价格快照（30 秒） + 异常检测 + 持仓实时监控/紧急止损。"""
     global _last_price
@@ -127,6 +180,8 @@ def check_price() -> None:
         price_map = {sym: float(row["price"]) for sym, row in prices.items()
                      if row.get("price")}
         mon = monitor_positions(price_map)
+        # 合约强平守护（保证金消耗阈值预警/保护平仓）
+        check_liquidation_risk(price_map)
         if mon.get("count", 0) > 0:
             emg = emergency_stop_loss(_order_client(), price_map,
                                       fallback_client=_fallback_clients())

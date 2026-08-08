@@ -344,6 +344,19 @@ def run_once(client, prev_state: dict,
     except Exception as exc:
         log(f"⚠️ 学习引擎失败: {exc}")
 
+    # 资金费率（永续持仓成本/收益：正费率多头付费、空头收费）
+    funding_rates: dict = {}
+    try:
+        for s in ("BTCUSDT", "ETHUSDT"):
+            try:
+                fr = client.funding_rate(s)
+                if fr.get("funding_rate") is not None:
+                    funding_rates[s] = fr
+            except Exception:
+                continue
+    except Exception:
+        pass
+
     # 合约持仓同步（OKX 真实多空持仓 → positions.json，供调仓/止损/看板使用）
     try:
         if account_client is not None and hasattr(account_client, "contract_positions"):
@@ -359,6 +372,7 @@ def run_once(client, prev_state: dict,
                     "mark_price": cp.get("mark_price", 0),
                     "unrealized_pnl": cp.get("unrealized_pnl", 0),
                     "liq_price": cp.get("liq_price", 0),
+                    "leverage": cp.get("leverage", 2.0),
                 }
             if synced or not POSITIONS_PATH.exists():
                 POSITIONS_PATH.write_text(
@@ -442,6 +456,7 @@ def run_once(client, prev_state: dict,
         "portfolio": portfolio,
         "okx_account": okx_account,
         "base_cash": base_cash,
+        "funding_rates": funding_rates,
         "agents": run_agents_work(indicators, prev_state, snapshot, risk_state, portfolio),
         "events_recent": len(events),
     }
