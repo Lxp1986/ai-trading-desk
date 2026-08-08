@@ -42,7 +42,15 @@ def _qty(order: dict[str, Any]) -> float:
 
 
 def _quote_qty(order: dict[str, Any]) -> float:
-    return float(order.get("quote_qty") or order.get("cummulativeQuoteQty") or 0.0)
+    """订单名义金额：优先 quote_qty；合约单无此字段时用 成交均价×数量 兜底。"""
+    q = order.get("quote_qty") or order.get("cummulativeQuoteQty")
+    if not q:
+        price = order.get("avg_fill_price") or order.get("avgPrice")
+        qty = order.get("quantity")
+        if price and qty:
+            return float(price) * float(qty)
+        return 0.0
+    return float(q)
 
 
 def _fee(order: dict[str, Any]) -> float:
@@ -132,6 +140,8 @@ def unrealized_pnl(orders: list[dict[str, Any]], prices: dict[str, float]) -> fl
     pos_value = 0.0
     cost = 0.0
     for p in positions(orders).values():
+        if p.quantity <= 0:
+            continue  # 已平仓残留（qty=0 但 cost_basis 未清零）不计浮盈
         price = _match_price(prices, p.symbol) or p.avg_cost
         pos_value += p.quantity * price
         cost += p.cost_basis

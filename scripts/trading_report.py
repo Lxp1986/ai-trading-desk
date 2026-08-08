@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT = ROOT / "artifacts" / "audit.jsonl"
 TOKEN_USAGE = ROOT / "artifacts" / "token_usage.json"
-STARTING_CAPITAL_USDT = 277.0
+STARTING_CAPITAL_USDT = 80000.0  # OKX Demo 账户重置后初始（虚拟 USDT 主）
 
 
 def now_cn() -> str:
@@ -79,20 +79,44 @@ def build_report() -> dict:
     market = state.get("snapshot", {}) or {}
     indicators = state.get("indicators", {}) or {}
     risk = state.get("risk", {}) or {}
+    # 实时持仓（优先 OKX 合约同步/账本聚合；实时成功即采用，空仓也是结果）
+    live_positions = {}
+    try:
+        from autotrader.position_manager import load_positions
+        live_positions = load_positions()
+    except Exception:
+        live_positions = portfolio.get("positions", {}) or {}  # 仅读取失败才回退旧快照
+    # 浮盈实时重算（基于实时持仓 + live_prices 最新价；空仓 = 0）
+    live_unrealized = 0.0
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        lpx_path = _Path(__file__).resolve().parents[1] / "artifacts" / "live_prices.json"
+        if lpx_path.exists():
+            lpx = _json.loads(lpx_path.read_text(encoding="utf-8")).get("prices", {})
+            for sym, p in live_positions.items():
+                row = lpx.get(sym) or {}
+                px = row.get("price") if isinstance(row, dict) else None
+                if not px:
+                    continue
+                side = p.get("side", "long")
+                live_unrealized += p["quantity"] * ((px - p["avg_cost"]) if side == "long" else (p["avg_cost"] - px))
+    except Exception:
+        live_unrealized = portfolio.get("unrealized_pnl", 0.0)
 
     status = {
         "generated_at": now_cn(),
         "mode": "simulation",
-        "network": "Binance Spot Testnet",
+        "network": "OKX Demo Trading（模拟盘）",
         "dashboard_alive": server_alive(),
         "state_updated_at": state.get("updated_at"),
         "starting_capital": STARTING_CAPITAL_USDT,
         "nav": portfolio.get("equity", STARTING_CAPITAL_USDT),
         "cash": portfolio.get("cash", STARTING_CAPITAL_USDT),
-        "positions": portfolio.get("positions", {}),
+        "positions": live_positions,
         "position_value": portfolio.get("position_value", 0.0),
         "realized_pnl": portfolio.get("realized_pnl", 0.0),
-        "unrealized_pnl": portfolio.get("unrealized_pnl", 0.0),
+        "unrealized_pnl": live_unrealized,
         "max_drawdown_pct": portfolio.get("max_drawdown_pct", 0.0),
         "market": {
             "symbol": market.get("symbol", "BTC/USDT"),
@@ -121,69 +145,76 @@ def build_report() -> dict:
 
 
 def render_markdown(s: dict) -> str:
+    """通俗版经营报告——用人话，不费力（董事长风格要求）。
+
+    原则：先给结论（赚/亏、正常/异常），再给关键数字，术语全部换成大白话。
+    """
     market = s.get("market", {})
     risk = s.get("risk", {})
-    trend_cn = {"trend_up": "📈 上升", "trend_down": "📉 下降"}.get(market.get("trend"), "↔️ 震荡")
     halt = risk.get("trading_halted")
+    trend_cn = {"trend_up": "📈 偏强", "trend_down": "📉 偏弱"}.get(market.get("trend"), "↔️ 横盘")
+    # 盈亏人话
+    realized = float(s.get("realized_pnl", 0) or 0)
+    unrealized = float(s.get("unrealized_pnl", 0) or 0)
+    total_pnl = realized + unrealized
+    pnl_word = "赚了" if total_pnl >= 0 else "亏了"
+    pnl_smile = "😀" if total_pnl >= 0 else "😟"
+    # 状态结论
+    status_ok = s.get("dashboard_alive") and not halt
     lines = [
-        "📊 **AI自主交易事业部 · 经营报告**",
-        f"生成时间：{s['generated_at']}",
+        "📊 **AI交易 · 每日经营报告**",
+        f"（{s['generated_at']} · {s['mode']}，模拟盘，不是真钱）",
         "",
-        "## 运行状态",
-        f"- 模式：**{s['mode']}**（模拟盘，无真实资金）",
-        f"- 网络：{s['network']}",
-        f"- Dashboard：{'✅ 运行中' if s['dashboard_alive'] else '❌ 未运行'}",
-        f"- 状态更新时间：{s.get('state_updated_at') or '（运行循环未启动）'}",
-        f"- 风控：{'🚨 熔断中：' + '；'.join(risk.get('halt_reasons', [])) if halt else '✅ 正常'}",
+        f"**一句话：{pnl_smile} 目前{pnl_word} {abs(total_pnl):.2f} USDT，系统{'一切正常 ✅' if status_ok else '有点问题 ⚠️'}。**",
+    ]
+    if halt:
+        lines.append(f"🚨 **注意：风控已熔断！** 原因：{'；'.join(risk.get('halt_reasons', []))}")
+    lines += [
         "",
-        "## 市场与组合",
-        f"- 市场状态：{trend_cn}（{market.get('symbol')} @ ${market.get('price') or '--'}，"
-        f"RSI {market.get('rsi14') or '--'}，量比 {market.get('volume_ratio') or '--'}，"
-        f"24h {market.get('change_24h_pct') or 0:+.2f}%）",
-        f"- 初始资金：{s['starting_capital']} USDT",
-        f"- 当前净值：{s['nav']} USDT（模拟）",
-        f"- 现金：{s['cash']} USDT | 持仓市值：{s['position_value']} USDT",
-        f"- 已实现盈亏：{s['realized_pnl']} USDT | 浮动盈亏：{s['unrealized_pnl']} USDT",
-        f"- 最大回撤：{s['max_drawdown_pct']}%",
+        "## 行情怎么看",
+        f"- {market.get('symbol')} 现在 ${market.get('price') or '--'}，24 小时{'涨' if float(market.get('change_24h_pct') or 0) >= 0 else '跌'} {abs(float(market.get('change_24h_pct') or 0)):.2f}%，整体{trend_cn}。",
+        f"- 热度指标 RSI {market.get('rsi14') or '--'}（>70 偏热、<30 偏冷），量比 {market.get('volume_ratio') or '--'}（>1 说明买卖比平时活跃）。",
+        "",
+        "## 账户情况",
+        f"- 总资产：{s['nav']} USDT（一开始是 {s['starting_capital']} USDT）",
+        f"- 手头现金：{s['cash']} USDT，股票/币的市值：{s['position_value']} USDT",
+        f"- 已经落袋：{realized:+.2f} USDT，还在浮动的：{unrealized:+.2f} USDT",
+        f"- 最惨时回撤：{s['max_drawdown_pct']}%（超过 25% 系统会强制清仓止损）",
     ]
     if s.get("positions"):
         pos_desc = "；".join(
             f"{k} {v['quantity']}（成本 {v['avg_cost']:.2f}）" for k, v in s["positions"].items()
         )
-        lines.append(f"- 持仓：{pos_desc}")
+        lines.append(f"- 现在拿着：{pos_desc}")
     else:
-        lines.append("- 持仓：无")
+        lines.append("- 现在拿着：空仓，没持仓")
     lines += [
         "",
-        "## 决策记录",
-        f"- 审计记录总数：{s['audit_records']}",
-        f"- 已批准：{s['approved_decisions']} / 观望：{s.get('held_decisions', 0)} / 被风控否决：{s['rejected_decisions']}",
+        "## 最近拍板",
+        f"- 一共做了 {s['audit_records']} 次决策：{s['approved_decisions']} 次动手、{s.get('held_decisions', 0)} 次观望、{s['rejected_decisions']} 次被风控拦下（拦得对，安全第一）。",
     ]
     latest = s.get("latest_decision")
     if latest:
         decision = latest.get("decision", {})
         intent = decision.get("intent", {})
         snap = latest.get("snapshot", {})
-        lines += [
-            "",
-            "**最近一次决策**：",
-            f"- 品种：{snap.get('symbol')} @ {snap.get('price')}（来源：{snap.get('source')}）",
-            f"- 方向：{intent.get('side')} / 数量 {intent.get('quantity')} / 置信度 {intent.get('confidence')}",
-            f"- 结论：{'✅ 风控批准' if decision.get('approved') else '❌ 风控否决'}（{', '.join(decision.get('reasons', []))}）",
-            f"- 假设：{intent.get('thesis', '')[:120]}",
-        ]
+        verdict = "✅ 批准了" if decision.get("approved") else "❌ 拦下了"
+        sym_name = snap.get("symbol") or "（记录里没写品种）"
+        side_raw = str(intent.get("side") or "").upper()
+        side_word = "买" if side_raw == "BUY" else ("卖" if side_raw == "SELL" else "（方向没记录）")
+        lines.append(
+            f"- 最近一次：想{side_word} {sym_name}，"
+            f"{verdict}（{'，'.join(decision.get('reasons', [])[:2]) or '没记录原因'}）"
+        )
     else:
-        lines.append("- （暂无决策记录）")
+        lines.append("- （还没拍过板）")
     lines += [
         "",
-        "## Token 消耗（本项目内）",
-        f"- 累计：{s['token_usage']['total_tokens']} tokens / {s['token_usage']['api_calls']} 次调用",
-        f"- Provider：{s['token_usage']['provider']} / Model：{s['token_usage']['model']}",
-        f"- 更新时间：{s['token_usage']['updated_at'] or '从未调用'}",
+        "## AI 花了多少",
+        f"- 累计 {s['token_usage']['total_tokens']} tokens / {s['token_usage']['api_calls']} 次调用（项目内预算 3 元/天，打满即停，不会超支）",
         "",
         "## 说明",
-        "- 以上为**模拟盘状态**，非实盘收益；净值/盈亏来自本地账本（测试网虚拟订单）。",
-        "- 报告由本地脚本生成，仅统计本项目 Token，不混入其他项目。",
+        "- 以上全是**模拟盘数据**，不是真实收益；30 天验证通过前不会碰真钱。",
     ]
     return "\n".join(lines)
 

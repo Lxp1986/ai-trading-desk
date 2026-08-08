@@ -88,11 +88,32 @@ def load_positions() -> dict[str, dict[str, Any]]:
                     return out
     except (OSError, ValueError, TypeError):
         pass
-    from autotrader.portfolio import load_orders, open_positions
+    from autotrader.portfolio import load_orders
     orders = load_orders(ORDERS_PATH) if ORDERS_PATH.exists() else []
-    poss = open_positions(orders)
-    return {s: {"quantity": float(p.quantity), "avg_cost": float(p.avg_cost),
-                "cost_basis": float(p.cost_basis)} for s, p in poss.items()}
+    # 多空双向聚合：开仓（BUY+long / SELL+short）增仓，平仓（SELL+long / BUY+short）减仓
+    poss: dict[str, dict[str, Any]] = {}
+    for o in orders:
+        if o.get("status") not in (None, "FILLED", "filled"):
+            continue
+        sym = o.get("symbol")
+        qty = float(o.get("quantity") or 0)
+        if not sym or qty <= 0:
+            continue
+        side = str(o.get("side", "")).upper()
+        pos_side = o.get("pos_side") or ("long" if side == "BUY" else "short")
+        p = poss.setdefault(sym, {"quantity": 0.0, "avg_cost": 0.0, "cost_basis": 0.0, "side": pos_side})
+        opening = (side == "BUY" and pos_side == "long") or (side == "SELL" and pos_side == "short")
+        if opening:
+            new_qty = p["quantity"] + qty
+            quote = float(o.get("quote_qty") or 0)
+            if not quote:
+                quote = float(o.get("avg_fill_price") or 0) * qty
+            p["cost_basis"] += quote
+            p["avg_cost"] = p["cost_basis"] / new_qty if new_qty else 0.0
+            p["quantity"] = new_qty
+        else:
+            p["quantity"] = max(0.0, p["quantity"] - qty)
+    return {k: v for k, v in poss.items() if v["quantity"] > 0}
 
 
 def _latest_price(symbol: str, max_age_s: int = 300) -> float | None:
@@ -470,7 +491,8 @@ def open_position(client: Any, symbol: str, signal: dict[str, Any],
                   market: dict[str, Any] | None = None,
                   strategy_winrate: float | None = None,
                   drawdown_pct: float | None = None,
-                  consecutive_losses: int | None = None) -> dict[str, Any]:
+                  consecutive_losses: int | None = None,
+                  contract: bool = True) -> dict[str, Any]:
     """开仓引擎（多空双向 · USDT 本位永续）：信号 → 风控闸门 → 动态杠杆 → 仓位 → 下单 → 审计。
 
     - action=buy → 开多（合约 long）；action=sell → 开空（合约 short）
@@ -492,14 +514,13 @@ def open_position(client: Any, symbol: str, signal: dict[str, Any],
     if strength < 0.5:
         return {"symbol": symbol, "action": "no_open",
                 "reason": f"信号强度 {strength:.2f} < 0.5（弱信号不开仓）", "ok": False}
-    # 已有同方向持仓 → 不重复开仓
+    # 已有持仓 → 不重复开仓（一币一方向：多空互斥，双向并存会覆盖聚合）
     positions = load_positions()
     held = positions.get(symbol)
     if held and held.get("quantity", 0) > 0:
         held_side = held.get("side", "long")
-        if held_side == pos_side:
-            return {"symbol": symbol, "action": "no_open",
-                    "reason": f"已持有 {symbol} {held_side}，不重复开仓（调仓由 manage 处理）", "ok": False}
+        return {"symbol": symbol, "action": "no_open",
+                "reason": f"已持有 {symbol} {held_side}，不重复开仓（反向需先平仓，调仓由 manage 处理）", "ok": False}
     if len(positions) >= MAX_POSITIONS:
         return {"symbol": symbol, "action": "no_open",
                 "reason": f"持仓数 {len(positions)} ≥ {MAX_POSITIONS}（分散风险限制）", "ok": False}

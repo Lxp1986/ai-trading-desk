@@ -195,10 +195,16 @@ class PositionManagerTest(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertEqual(r["action"], "SELL_executed")
         self.assertEqual(self.client.orders[-1]["pos_side"], "short")
-        # 正常开多：现金 277 → 风险预算 2.77 → risk_qty = 2.77/(1800*0.03)=0.0513；
-        # 集中度上限 = 277*20%/1800 = 0.0308（cap 生效，单标的 ≤20% 现金）
+        # 已有空头 → 同币开多拒绝（多空互斥，同一币只持一个方向）
         ok = {"action": "buy", "strength": 0.8, "strategy": "range_reversion",
               "reason": "震荡超卖低吸"}
+        r = pm.open_position(self.client, "ETHUSDT", ok, 1800.0)
+        self.assertFalse(r["ok"])
+        self.assertIn("已持有", r["reason"])
+        # 清空账本后正常开多：现金 277 → 风险预算 2.77 → risk_qty = 2.77/(1800*0.03)=0.0513；
+        # 集中度上限 = 277*20%/1800 = 0.0308（cap 生效，单标的 ≤20% 现金）
+        pm._LAST_ORDERS.clear()
+        self._write_orders([])
         r = pm.open_position(self.client, "ETHUSDT", ok, 1800.0)
         self.assertTrue(r["ok"])
         self.assertEqual(r["action"], "BUY_executed")
